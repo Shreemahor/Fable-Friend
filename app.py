@@ -4,17 +4,22 @@ from typing import TypedDict, Annotated, List
 from langgraph.graph import add_messages, StateGraph, END, START
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.checkpoint.memory import MemorySaver
-from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.prompts import ChatPromptTemplate, PromptTemplate
+from langchain_core.output_parsers import StrOutputParser
 from langgraph.types import Command, interrupt
 import uuid
 
 import gradio as gr
 
-openrouter_api_key = os.getenv("OPENROUTER_API_KEY")
-llm = ChatOpenAI(model="allenai/olmo-3.1-32b-think:free",
-                api_key=openrouter_api_key,
-                base_url="https://openrouter.ai/api/v1"
-)
+# openrouter_api_key = os.getenv("OPENROUTER_API_KEY")
+# llm = ChatOpenAI(model="allenai/olmo-3.1-32b-think:free",
+#                 api_key=openrouter_api_key,
+#                 base_url="https://openrouter.ai/api/v1"
+# )
+
+from langchain_groq import ChatGroq
+llm = ChatGroq(model="openai/gpt-oss-120b")
+llm2 = ChatGroq(model="llama-3.1-8b-instant")
 
 prompt = ChatPromptTemplate.from_messages([
     ("system", "You are a fantasy game dungeon master. You will guide the user through an interactive story where they make choices that affect the outcome of the adventure." \
@@ -25,20 +30,31 @@ chain = prompt | llm
 
 class Story(TypedDict): 
     story_summary: str
-    situation: Annotated[List[str], add_messages]
+    situation: Annotated[List[AIMessage], add_messages]
     your_action: Annotated[List[str], add_messages]
 
 
 def storyteller(state: Story): 
 
     print("at storyteller node")
-    situation = state["story_summary"]
+
+    summarize_prompt = PromptTemplate.from_template("Summarize/Paraphrase the following storyline into a concise and fully encompossing" \
+    "paragraph: {situation}")
+    output_parser = StrOutputParser()
+    what_happened = summarize_prompt | llm2 | output_parser
+
+    ai_messages = [m for m in state["situation"] if isinstance(m, AIMessage)]
+    recent = ai_messages[-5:]
+    recent_text = "\n\n".join(m.content for m in recent)
+    summmarizer_input = f"Most importantly a summary: {state['story_summary']}\n\nAlso if necessary Recent scenes:\n{recent_text}"
+    state["story_summary"] = what_happened.invoke(summmarizer_input)
+
     your_action = state["your_action"] if "your_action" in state else ["No Action yet"]
 
     prompt = f"""
         You are a fantasy dugeon master. You will guide the user through an interactive story where they make choices that affect the outcome of the adventure.
         After the user makes a choice, continue the story in a paragraph by describing the next situation based on their action, keeping it engaging and immersive
-        Current situation: {situation},
+        Current situation: {what_happened},
         The user's last action: {your_action[-1] if your_action else "No action yet"}
     """
 
