@@ -11,12 +11,6 @@ import uuid
 
 import gradio as gr
 
-# openrouter_api_key = os.getenv("OPENROUTER_API_KEY")
-# llm = ChatOpenAI(model="allenai/olmo-3.1-32b-think:free",
-#                 api_key=openrouter_api_key,
-#                 base_url="https://openrouter.ai/api/v1"
-# )
-
 from langchain_groq import ChatGroq
 llm = ChatGroq(model="openai/gpt-oss-120b")
 llm2 = ChatGroq(model="llama-3.1-8b-instant")
@@ -54,7 +48,7 @@ def storyteller(state: Story):
     prompt = f"""
         You are a fantasy dugeon master. You will guide the user through an interactive story where they make choices that affect the outcome of the adventure.
         After the user makes a choice, continue the story in a paragraph by describing the next situation based on their action, keeping it engaging and immersive
-        Current situation: {what_happened},
+        Current situation: {state['story_summary']},
         The user's last action: {your_action[-1] if your_action else "No action yet"}
     """
 
@@ -121,6 +115,9 @@ initial_state = {
 }
 
 
+# Everything after this is gradio and app management integration
+
+
 def run_until_interrupt(app, starter, config):
     latest_message = "Nothing for now"
 
@@ -171,13 +168,46 @@ def on_user_message(user_message, history, thread_id):
     return "", history, thread_id
 
 
+def initialize_state(char_name, genre) -> dict:
+    char_name = (char_name or "Unknown Hero").strip()
+    genre = (genre or "fantasy").strip()
+    subgenre = {
+        "fantasy": "High Fantasy Adventure",
+        "scifi": "Cyberpunk Mystery",
+        "horror": "Eldritch Horror",
+        "romance": "Victorian Romance",
+    }.get(genre, genre)
+    opening = (
+        f"The user is {char_name}, the genre is {subgenre}. Open with an immersive scene ending with what do you do next?"
+    )
 
-with gr.Blocks() as demo:
-    thread_id_state = gr.State("")
-    chat = gr.Chatbot()
-    box = gr.Textbox(label="Type 'start' to begin")
-    box.submit(on_user_message, inputs=[box, chat, thread_id_state],
-               outputs=[box, chat, thread_id_state])
+    return {
+        "story_summary": opening,
+        "situation": [],
+        "your_action": []
+    }
 
+
+def on_begin_story(char_name, genre, history, thread_id):
+    # standard stuff
+    thread_id = str(uuid.uuid4())
+    starter = initialize_state(char_name, genre)
+    opening = run_until_interrupt(app, starter, config={"configurable": {"thread_id": thread_id}})
+    history = (history or []) + [{"role": "assistant", "content": opening}]
+
+    # return for gradio
+    return (
+        history,
+        thread_id,
+        char_name,
+        genre,
+        gr.update(visible=False),  # title
+        gr.update(visible=False),  # crystal ball
+        gr.update(visible=True)  # chat 
+    )
+
+
+from gradio_frontend import build_demo
+demo = build_demo(on_user_message=on_user_message,on_begin_story=on_begin_story)
 if __name__ == "__main__":
     demo.queue().launch()

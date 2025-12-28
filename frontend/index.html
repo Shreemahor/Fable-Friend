@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fable Friend: Your AI Story</title>
+    <!-- Bootstrap 5 CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;700&family=Fredoka:wght@400;600&family=Lato:wght@300;400&display=swap" rel="stylesheet">
+    <!-- Lottie Player -->
+    <script src="https://unpkg.com/@lottiefiles/lottie-player@latest/dist/lottie-player.js"></script>
+    
+    <style>
+        :root {
+            --primary-glow: #5b8bff;
+            --secondary-glow: #d946ef;
+            --bg-dark: #0f1116;
+            --gold-primary: #FFD700;
+            --gold-secondary: #FF8C00;
+            --purple-dark: #2e0249;
+            --purple-deep: #1a0b2e;
+        }
+
+        body {
+            background-color: var(--bg-dark);
+            color: #e9edf5;
+            font-family: 'Lato', sans-serif;
+            overflow: hidden;
+            height: 100vh;
+            margin: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        h1, h2, h3 {
+            font-family: 'Cinzel', serif;
+        }
+
+        /* --- Screen Management --- */
+        .screen {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            transition: opacity 0.8s ease, transform 0.8s ease;
+            z-index: 10;
+        }
+
+        .hidden {
+            opacity: 0;
+            pointer-events: none;
+            transform: scale(0.95);
+            z-index: -1;
+        }
+
+        /* --- 1. Title Screen Styling --- */
+        #title-screen {
+            background: radial-gradient(circle at center, #1a1f2e 0%, #0f1116 100%);
+        }
+
+        .title-text {
+            font-family: 'Fredoka', sans-serif;
+            font-size: 6rem;
+            font-weight: 600;
+            background: linear-gradient(135deg, #FFD700 0%, #FF8C00 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            text-shadow: 0 0 30px rgba(255, 140, 0, 0.4);
+            margin-bottom: 1rem;
+            text-align: center;
+        }
+
+        .subtitle-text {
+            font-family: 'Fredoka', sans-serif;
+            font-size: 2rem;
+            color: #FFD700;
+            margin-bottom: 3rem;
+            letter-spacing: 1px;
+        }
+
+        .btn-magic {
+            background: #2e0249; /* Dark Purple */
+            border: 2px solid var(--secondary-glow);
+            color: #FFD700;
+            padding: 15px 40px;
+            font-size: 1.2rem;
+            border-radius: 50px;
+            transition: all 0.3s ease;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            box-shadow: 0 0 15px rgba(217, 70, 239, 0.2);
+            font-weight: 700;
+            cursor: pointer; /* Ensure pointer cursor */
+            z-index: 100; /* Ensure it's clickable */
+            position: relative;
+        }
+
+        .btn-magic:hover {
+            background: var(--secondary-glow);
+            color: #FFD700;
+            box-shadow: 0 0 30px rgba(217, 70, 239, 0.6);
+            transform: translateY(-2px);
+        }
+
+        /* --- 2. Crystal Ball Styling --- */
+        .crystal-ball-wrapper {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 900px;
+            height: 900px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 1;
+            transition: filter 1.5s ease;
+            pointer-events: none; /* Let clicks pass through to form */
+        }
+
+        .crystal-ball-wrapper.blurred {
+            filter: blur(15px) brightness(0.7);
+        }
+
+        /* The Crystal Ball Lottie */
+        lottie-player {
+            width: 100%;
+            height: 100%;
+            filter: drop-shadow(0 0 30px rgba(91, 139, 255, 0.3));
+        }
+
+        /* The Form inside the ball */
+        .ball-content {
+            position: relative;
+            z-index: 2;
+            width: 400px;
+            text-align: center;
+            background: rgba(26, 11, 46, 0.9); /* Deep Purple Background */
+            padding: 2.5rem;
+            border-radius: 20px;
+            backdrop-filter: blur(10px);
+            border: 2px solid #FFD700;
+            box-shadow: 0 0 30px rgba(0,0,0,0.8), inset 0 0 20px rgba(46, 2, 73, 0.5);
+            
+            /* Center the form on screen */
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+        }
+
+        .ball-content h3 {
+            color: #fff;
+            margin-bottom: 1.5rem;
+            text-shadow: 0 2px 4px rgba(0,0,0,0.8);
+        }
+
+        .form-control, .form-select {
+            background: rgba(0, 0, 0, 0.6);
+            border: 1px solid #FFD700;
+            color: #FFD700;
+            margin-bottom: 1.5rem;
+            padding: 12px;
+            font-family: 'Fredoka', sans-serif;
+        }
+        
+        .form-control:focus, .form-select:focus {
+            background: rgba(0, 0, 0, 0.8);
+            border-color: #FF8C00;
+            color: #FFD700;
+            box-shadow: 0 0 15px rgba(255, 215, 0, 0.3);
+        }
+
+        .form-control::placeholder { 
+            color: rgba(255, 215, 0, 0.5); 
+        }
+        
+        /* Custom Select Arrow Color */
+        .form-select {
+            background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3e%3cpath fill='%23FFD700' stroke='%23FFD700' stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='m2 5 6 6 6-6'/%3e%3c/svg%3e");
+            background-repeat: no-repeat;
+            background-position: right 0.75rem center;
+            background-size: 16px 12px;
+        }
+
+        @keyframes float {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-20px); }
+        }
+
+        /* --- 3. Zoom Animation --- */
+        .crystal-ball-wrapper.zoomed-in {
+            transform: translate(-50%, -50%) scale(20); /* Massive scale to "enter" the ball */
+            filter: blur(0px); /* Ensure it's sharp as we enter */
+            transition: transform 2s cubic-bezier(0.7, 0, 0.3, 1);
+            z-index: 999;
+        }
+
+        .ball-content.fade-out {
+            opacity: 0;
+            transform: translate(-50%, -50%) scale(0.8);
+            transition: opacity 0.5s ease, transform 0.5s ease;
+        }
+
+        /* Hide the book wrapper as we are replacing it */
+        .book-wrapper { display: none !important; }
+    </style>
+</head>
+<body>
+
+    <!-- SHARED BACKGROUND: Crystal Ball -->
+    <div class="crystal-ball-wrapper blurred" id="crystal-ball-bg">
+        <lottie-player 
+            id="ball-lottie"
+            src="crystal-ball.json" 
+            background="transparent" 
+            speed="1" 
+            loop 
+            mode="normal">
+        </lottie-player>
+    </div>
+
+    <!-- SCREEN 1: Title Screen -->
+    <div id="title-screen" class="screen">
+        <h1 class="title-text">Fable✨Friend</h1>
+        <p class="subtitle-text">Your Own AI Story🔮</p>
+        <button class="btn btn-magic" onclick="goToCrystalBall()">
+            Start Your Journey
+        </button>
+    </div>
+
+    <!-- SCREEN 2: Crystal Ball Customization -->
+    <div id="crystal-screen" class="screen hidden">
+        <!-- Note: Ball is now in shared background -->
+        <div class="ball-content">
+            <!-- Removed Title as requested -->
+            
+            <div class="mb-3">
+                <input type="text" class="form-control" id="charName" placeholder="Name your Character...">
+            </div>
+            
+            <div class="mb-3">
+                <select class="form-select" id="storyGenre">
+                    <option selected disabled>Choose your Path...</option>
+                    <option value="fantasy">High Fantasy Adventure</option>
+                    <option value="scifi">Cyberpunk Mystery</option>
+                    <option value="horror">Eldritch Horror</option>
+                    <option value="romance">Victorian Romance</option>
+                </select>
+            </div>
+
+            <button class="btn btn-magic w-100 mt-2" onclick="zoomAndStart()">
+                Begin Story
+            </button>
+        </div>
+    </div>
+
+    <!-- ANIMATION: Removed Book Covers -->
+    
+    <!-- Bootstrap JS -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+
+    <script>
+        // Initialize Lottie
+        const player = document.getElementById('ball-lottie');
+        // Stop it initially if you want it completely static, 
+        // but "blurred version" usually implies it's there. 
+        // We'll pause it to save resources or keep it looping if it's a subtle float.
+        // User said "animation plays once the journey start has been picked".
+        // So we pause it initially.
+        
+        // Wait for player to load
+        player.addEventListener('ready', () => {
+            player.stop();
+        });
+
+        // Transition from Title to Crystal Ball
+        function goToCrystalBall() {
+            const titleScreen = document.getElementById('title-screen');
+            const crystalScreen = document.getElementById('crystal-screen');
+            const ballWrapper = document.getElementById('crystal-ball-bg');
+
+            // Unblur the ball
+            ballWrapper.classList.remove('blurred');
+
+            // Fade out title
+            titleScreen.classList.add('hidden');
+            
+            // Wait for fade out, then show crystal ball form
+            setTimeout(() => {
+                titleScreen.style.display = 'none';
+                crystalScreen.style.display = 'flex';
+                // Small delay to allow display:flex to apply before removing opacity class
+                setTimeout(() => {
+                    crystalScreen.classList.remove('hidden');
+                }, 50);
+            }, 800);
+        }
+
+        // Zoom Animation & Redirect
+        function zoomAndStart() {
+            const ballWrapper = document.getElementById('crystal-ball-bg');
+            const ballContent = document.querySelector('.ball-content');
+            const player = document.getElementById('ball-lottie');
+
+            // 1. Play the Crystal Ball Animation
+            player.play();
+
+            // 2. Wait a moment for the animation to be seen (e.g. 1.5s)
+            setTimeout(() => {
+                // 3. Fade out the form content
+                ballContent.classList.add('fade-out');
+
+                // 4. Start the Zoom
+                setTimeout(() => {
+                    ballWrapper.classList.add('zoomed-in');
+                    
+                    // 5. Redirect when screen is fully covered by the "inside" of the ball
+                    setTimeout(() => {
+                        // Optional: Save user choices
+                        const charName = document.getElementById('charName').value;
+                        const genre = document.getElementById('storyGenre').value;
+                        localStorage.setItem('fable_charName', charName);
+                        localStorage.setItem('fable_genre', genre);
+
+                        window.location.href = 'chat.html';
+                    }, 1500); // Match transition duration roughly
+                }, 500);
+            }, 1500); // Delay for crystal ball animation
+        }
+    </script>
+</body>
+</html>
