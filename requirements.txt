@@ -1,0 +1,4 @@
+gradio==6.2.0
+langgraph
+langchain-openai
+langchain-core
