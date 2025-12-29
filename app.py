@@ -10,6 +10,7 @@ from langgraph.types import Command, interrupt
 import uuid
 
 import gradio as gr
+import time
 
 from langchain_groq import ChatGroq
 llm = ChatGroq(model="openai/gpt-oss-120b")
@@ -201,13 +202,12 @@ def on_begin_story(char_name, genre, history, thread_id):
         thread_id,
         char_name,
         genre,
-        gr.update(visible=False),  # title
-        gr.update(visible=False),  # crystal ball
-        gr.update(visible=True)  # chat 
+        True,
+        time.time() + 3.5
     )
 
 
-from gradio_frontend import build_demo
+from gradio_frontend import build_demo, CSS, HEAD
 demo = build_demo(on_user_message=on_user_message,on_begin_story=on_begin_story)
 if __name__ == "__main__":
-    demo.queue().launch()
+    demo.queue().launch(css=CSS, head=HEAD, allowed_paths=[os.path.abspath("frontend")], share=False)
