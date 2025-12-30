@@ -35,9 +35,32 @@ body, .gradio-container {
   height: 100vh;
 }
 
-// .gradio-container .wrap, .gradio-container .contain {
-// //   background: transparent !important;
+/*
+ .gradio-container .wrap, .gradio-container .contain {
+// background: transparent !important;
 // }
+*/
+
+#title-screen .wrap, #title-screen .contain,
+#crystal-screen .wrap, #crystal-screen .contain,
+#chat-screen .wrap, #chat-screen .contain {
+  background: transparent !important;
+}
+
+/* Dropdown popup background + text */
+.gradio-container [role="listbox"] {
+  background: var(--purple-deep) !important;
+  border: 1px solid var(--gold-primary) !important;
+}
+
+.gradio-container [role="option"] {
+  background: transparent !important;
+  color: var(--gold-primary) !important;
+}
+
+.gradio-container [role="option"]:hover {
+  background: rgba(255, 215, 0, 0.12) !important;
+}
 
 .gradio-container {
   position: relative !important;
@@ -189,12 +212,6 @@ body, .gradio-container {
   box-shadow: 0 0 15px rgba(255, 215, 0, 0.3) !important;
 }
 
-.ball-content {
-  max-width: 420px;
-  width: min(420px, 92vw);
-  margin: 0 auto;
-}
-
 .ball-content .btn-magic button {
   width: auto !important;
   min-width: 240px;
@@ -206,6 +223,19 @@ body, .gradio-container {
 .ball-content .gr-dropdown {
   width: 92% !important;
   margin: 0 auto !important;
+}
+
+.ball-content {
+  max-width: 420px !important;
+  width: min(420px, 92vw) !important;
+  margin: 0 auto !important;
+  flex: 0 0 auto !important;
+  align-self: center !important;
+}
+
+#ball-content {
+  max-width: 420px !important;
+  width: min(420px, 92vw) !important;
 }
 """
 
@@ -225,13 +255,9 @@ def check_finish_animation(is_pending, deadline):
     )
 
 
-def build_demo(*, on_user_message, on_begin_story) -> gr.Blocks:
+def build_demo(*, on_user_message, on_begin_story, on_begin_story_checked) -> gr.Blocks:
 
-    with gr.Blocks(theme=gr.themes.Soft(
-        primary_hue="purple",
-        secondary_hue="yellow",
-        neutral_hue="slate",
-    )) as demo:
+    with gr.Blocks() as demo:
         
         transition_pending = gr.State(False)
         transition_deadline = gr.State(0.0)
@@ -270,19 +296,23 @@ def build_demo(*, on_user_message, on_begin_story) -> gr.Blocks:
 
         crystal_ball_screen = gr.Group(visible=False, elem_id="crystal-screen")
         with crystal_ball_screen:
-            with gr.Group(elem_id="ball-content", elem_classes=["ball-content"]):
-                char_name = gr.Textbox(label="What is your name?", placeholder="Enter your character's name...")
-                genre = gr.Dropdown(
-                    label="Choose your Path",
-                    choices=[
-                        ("High Fantasy Adventure", "fantasy"),
-                        ("Cyberpunk Mystery", "scifi"),
-                        ("Eldritch Horror", "horror"),
-                        ("Victorian Romance", "romance")
-                    ],
-                    value=None,
-                )
-                begin_btn = gr.Button("Begin Your Story", elem_classes=["btn-magic"])
+            with gr.Group(elem_classes=["screen-inner"]):
+              with gr.Group(elem_id="ball-content", elem_classes=["ball-content"]):
+                  char_name = gr.Textbox(label="What is your name?", placeholder="Enter your character's name...")
+                  genre = gr.Dropdown(
+                      label="Choose your Path",
+                      choices=[
+                          ("High-Fantasy Quest ⚔️🐉", "fantasy"),
+                          ("Cyberpunk Heist 🤖🏙️", "scifi"),
+                          ("Grimdark Survival 💀🏚️", "grimdark"),
+                          ("Noir Detective 🕵️‍♂️🔦", "noir"),
+                          ("Cosmic Space Opera 🌌🛸", "space_opera")
+                      ],
+                      value=None,
+                  )
+                  debug_genre = gr.Textbox(label="DEBUG genre value", interactive=False)
+                  genre.change(fn=lambda g: g, inputs=genre, outputs=debug_genre, queue=False)
+                  begin_btn = gr.Button("Begin Your Story", elem_classes=["btn-magic"])
 
 
         chat_screen = gr.Group(visible=False, elem_id="chat-screen")
@@ -316,41 +346,42 @@ def build_demo(*, on_user_message, on_begin_story) -> gr.Blocks:
         )
 
         begin_btn.click(
-            fn=on_begin_story,
+            fn=None,
+            js="""
+              () => {
+              const bg = document.getElementById("crystal-ball-bg");
+              const content = document.getElementById("ball-content");
+              const player = document.getElementById("ball-lottie");
+
+              if (bg) bg.classList.remove("blurred");
+
+              // play the lottie
+              if (player) player.play();
+
+              setTimeout(() => { if (content) content.classList.add("fade-out"); }, 1500);
+              setTimeout(() => { if (bg) bg.classList.add("zoomed-in"); }, 2000);
+
+              // STOP the lottie and hide the whole background after the transition
+              setTimeout(() => {
+              if (player) {
+                  // prevent re-looping and stop drawing frames
+                  player.loop = false;
+                  if (player.stop) player.stop();
+                  else if (player.pause) player.pause();
+              }
+              if (bg) {
+                  bg.classList.remove("active");
+              }
+              }, 3400);
+              }
+              """
+        )
+
+        begin_btn.click(
+            fn=on_begin_story_checked,
             inputs=[char_name, genre, history_state, thread_id_state],
             outputs=[history_state, thread_id_state, char_name_state, genre_state,
                      transition_pending, transition_deadline],
-            js="""
-            () => {
-            const bg = document.getElementById("crystal-ball-bg");
-            const content = document.getElementById("ball-content");
-            const player = document.getElementById("ball-lottie");
-
-            // ensure unblurred when starting
-            if (bg) bg.classList.remove("blurred");
-
-            // play the lottie
-            if (player) player.play();
-
-            // match your index.html timing: play -> fade form -> zoom
-            setTimeout(() => { if (content) content.classList.add("fade-out"); }, 1500);
-            setTimeout(() => { if (bg) bg.classList.add("zoomed-in"); }, 2000);
-
-            // STOP the lottie + hide the whole background after the transition
-            setTimeout(() => {
-            if (player) {
-                // prevent re-looping and stop drawing frames
-                player.loop = false;
-                if (player.stop) player.stop();
-                else if (player.pause) player.pause();
-            }
-            if (bg) {
-                // hide the fixed background layer so it doesn't keep repainting
-                bg.classList.remove("active");
-            }
-            }, 3400);
-            }
-            """
         )
 
         box.submit(
