@@ -255,7 +255,7 @@ def check_finish_animation(is_pending, deadline):
     )
 
 
-def build_demo(*, on_user_message, on_begin_story, on_begin_story_checked) -> gr.Blocks:
+def build_demo(*, on_user_message, on_begin_story, on_begin_story_checked, on_continue_story) -> gr.Blocks:
 
     with gr.Blocks() as demo:
         
@@ -319,6 +319,7 @@ def build_demo(*, on_user_message, on_begin_story, on_begin_story_checked) -> gr
         with chat_screen:
             chat = gr.Chatbot()
             box = gr.Textbox(label="Your action", placeholder="What do you do? Type here...")
+            continue_btn = gr.Button("Continue", elem_classes=["btn-magic"])
 
         transition_timer.tick(
             fn=check_finish_animation,
@@ -387,7 +388,13 @@ def build_demo(*, on_user_message, on_begin_story, on_begin_story_checked) -> gr
         box.submit(
             fn=on_user_message,
             inputs=[box, history_state, thread_id_state],
-            outputs=[box, history_state, thread_id_state]
+          outputs=[box, history_state, thread_id_state, title_screen, crystal_ball_screen, chat_screen, transition_pending, transition_deadline]
+        )
+
+        continue_btn.click(
+            fn=on_continue_story,
+            inputs=[history_state, thread_id_state],
+            outputs=[history_state, thread_id_state],
         )
 
         history_state.change(fn=lambda h: h, inputs=[history_state], outputs=[chat])
