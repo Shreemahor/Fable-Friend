@@ -34,6 +34,41 @@ THREAD_META: Dict[str, Dict[str, Any]] = {}
 GRACE_PERIOD_INVISIBLE_TELLER = "grace_period:"
 
 
+def _ui_test_image_path() -> str | None:
+    """Return a local image path to show in-chat for UI testing, if present."""
+    candidates = [
+        os.path.join("frontend", "test.png"),
+        "test.png",
+    ]
+    for candidate in candidates:
+        try:
+            if os.path.exists(candidate):
+                return candidate
+        except Exception:
+            continue
+    return None
+
+
+def _append_ui_test_image_message(history: list[dict]) -> None:
+    path = _ui_test_image_path()
+    if not path:
+        return
+    history.append({"role": "assistant", "content": {"path": path}})
+
+
+def _find_last_assistant_text_index(history: list[dict]) -> int | None:
+    for idx in range(len(history) - 1, -1, -1):
+        item = history[idx]
+        if not isinstance(item, dict):
+            continue
+        if item.get("role") != "assistant":
+            continue
+        content = item.get("content")
+        if isinstance(content, str):
+            return idx
+    return None
+
+
 def _image_payload_to_pil(image_payload: Any) -> Any:
     """Convert a msgpack-serializable image payload (PNG bytes) into a PIL Image for Gradio."""
     if image_payload is None:
@@ -87,6 +122,7 @@ def _replay_thread(*, starter: dict, inputs: List[str]) -> tuple[list, str, Any,
     history: list[dict] = []
     opening, opening_image = run_until_interrupt(app, starter, config=cfg)
     history.append({"role": "assistant", "content": opening})
+    _append_ui_test_image_message(history)
     last_image = opening_image
     images: list[Any] = []
     if opening_image is not None:
@@ -103,6 +139,7 @@ def _replay_thread(*, starter: dict, inputs: List[str]) -> tuple[list, str, Any,
                 {"role": "assistant", "content": next_scene},
             ]
         )
+        _append_ui_test_image_message(history)
 
     return history, new_thread_id, last_image, images
 
@@ -645,6 +682,10 @@ def on_user_message(user_message, history, thread_id):
     images_to_show = meta.get("images") or []
 
     history = (history or []) + [{"role": "user", "content": msg}, {"role": "assistant", "content": next_scene}]
+    try:
+        _append_ui_test_image_message(history)
+    except Exception:
+        pass
     return "", history, thread_id, gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), _image_payloads_to_pil_list(images_to_show)
 
 
@@ -739,6 +780,10 @@ def on_begin_story(char_name, genre, history, thread_id):
     starter = initialize_state(char_name, genre)
     opening, opening_image = run_until_interrupt(app, starter, config={"configurable": {"thread_id": thread_id}})
     history = (history or []) + [{"role": "assistant", "content": opening}]
+    try:
+        _append_ui_test_image_message(history)
+    except Exception:
+        pass
 
     images: list[Any] = []
     if opening_image is not None:
@@ -774,22 +819,23 @@ def continue_story(history, thread_id):
     if next_scene == "Nothing for now":
         next_scene = "The story has ended. Type __REWIND__ to rewind, or __MENU__ to return to the menu."
 
-    history = (history or []) + [
-        {"role": "user", "content": "(Continue the story)"},
-        {"role": "assistant", "content": next_scene}
-    ]
-
     if new_image is not None:
         meta["last_image"] = new_image
         meta.setdefault("images", []).append(new_image)
 
-    # Continue should NOT add a user message; it should append to the last assistant response.
+    # Continue should NOT add a synthetic user message; append to the last assistant *text* message.
     history = list(history or [])
-    if history and isinstance(history[-1], dict) and history[-1].get("role") == "assistant":
-        prior = str(history[-1].get("content") or "")
-        history[-1]["content"] = (prior + "\n\n" + next_scene).strip() if prior else next_scene
+    last_text_idx = _find_last_assistant_text_index(history)
+    if last_text_idx is not None:
+        prior = str(history[last_text_idx].get("content") or "")
+        history[last_text_idx]["content"] = (prior + "\n\n" + next_scene).strip() if prior else next_scene
     else:
         history.append({"role": "assistant", "content": next_scene})
+
+    try:
+        _append_ui_test_image_message(history)
+    except Exception:
+        pass
 
     return history, thread_id, _image_payloads_to_pil_list(meta.get("images") or [])
 

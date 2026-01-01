@@ -316,30 +316,109 @@ def build_demo(*, on_user_message, on_begin_story, on_begin_story_checked, on_co
 
         chat_screen = gr.Group(visible=False, elem_id="chat-screen")
         with chat_screen:
-          chatbot = gr.Chatbot(elem_id="chatbot", show_label=False, height=None)
-          textbox = gr.Textbox(
-              label="Your action",
-              placeholder="What do you do? Type here...",
-          )
+            gr.Markdown("""# Fable✨Friend\n#### Your own AI story🔮""")
+            chatbot = gr.Chatbot(elem_id="chatbot", show_label=False, height=None)
+            textbox = gr.Textbox(
+                label="Your action",
+                placeholder="What do you do? Type here...",
+            )
 
-          def _chat_fn(message, history, thread_id):
-              _ignored_box, new_history, new_thread_id, *_rest = on_user_message(message, history, thread_id)
-              assistant_text = ""
-              if isinstance(new_history, list):
-                  for item in reversed(new_history):
-                      if isinstance(item, dict) and item.get("role") == "assistant":
-                          assistant_text = str(item.get("content") or "")
-                          break
-              return assistant_text, new_history, new_thread_id
+            REWIND_KEY = "__REWIND__"
+            MENU_KEY = "__MENU__"
 
-          gr.ChatInterface(
-              fn=_chat_fn,
-              chatbot=chatbot,
-              textbox=textbox,
-              additional_inputs=[thread_id_state],
-              additional_outputs=[history_state, thread_id_state],
-              fill_height=True,
-          )
+            def _submit_message(user_message, history, thread_id):
+                (
+                    box,
+                    new_history,
+                    new_thread_id,
+                    title_u,
+                    crystal_u,
+                    chat_u,
+                    pending,
+                    deadline,
+                    _images,
+                ) = on_user_message(user_message, history, thread_id)
+
+                return (
+                    box,
+                    new_history,
+                    new_history,
+                    new_thread_id,
+                    title_u,
+                    crystal_u,
+                    chat_u,
+                    pending,
+                    deadline,
+                )
+
+            def _rewind_click(history, thread_id):
+                return _submit_message(REWIND_KEY, history, thread_id)
+
+            def _menu_click(history, thread_id):
+                return _submit_message(MENU_KEY, history, thread_id)
+
+            def _continue_click(history, thread_id):
+                new_history, new_thread_id, _images = on_continue_story(history, thread_id)
+                return new_history, new_history, new_thread_id
+
+            textbox.submit(
+                fn=_submit_message,
+                inputs=[textbox, history_state, thread_id_state],
+                outputs=[
+                    textbox,
+                    chatbot,
+                    history_state,
+                    thread_id_state,
+                    title_screen,
+                    crystal_ball_screen,
+                    chat_screen,
+                    transition_pending,
+                    transition_deadline,
+                ],
+            )
+
+            with gr.Row():
+                continue_btn = gr.Button("Continue")
+                rewind_btn = gr.Button("Rewind")
+                menu_btn = gr.Button("Menu")
+
+            continue_btn.click(
+                fn=_continue_click,
+                inputs=[history_state, thread_id_state],
+                outputs=[chatbot, history_state, thread_id_state],
+            )
+
+            rewind_btn.click(
+                fn=_rewind_click,
+                inputs=[history_state, thread_id_state],
+                outputs=[
+                    textbox,
+                    chatbot,
+                    history_state,
+                    thread_id_state,
+                    title_screen,
+                    crystal_ball_screen,
+                    chat_screen,
+                    transition_pending,
+                    transition_deadline,
+                ],
+            )
+
+            menu_btn.click(
+                fn=_menu_click,
+                inputs=[history_state, thread_id_state],
+                outputs=[
+                    textbox,
+                    chatbot,
+                    history_state,
+                    thread_id_state,
+                    title_screen,
+                    crystal_ball_screen,
+                    chat_screen,
+                    transition_pending,
+                    transition_deadline,
+                ],
+            )
 
         transition_timer.tick(
             fn=check_finish_animation,
@@ -398,10 +477,20 @@ def build_demo(*, on_user_message, on_begin_story, on_begin_story_checked, on_co
               """
         )
 
+        def _begin_story_click(n, g, h, t):
+          out = on_begin_story_checked(n, g, h, t)
+          new_history = out[0]
+          new_thread_id = out[1]
+          new_char_name = out[2]
+          new_genre = out[3]
+          pending = out[4]
+          deadline = out[5]
+          return new_history, new_thread_id, new_char_name, new_genre, pending, deadline, new_history
+
         begin_btn.click(
-            fn=lambda n, g, h, t: (lambda out: (out[0], out[1], out[2], out[3], out[4], out[5], out[0]))(on_begin_story_checked(n, g, h, t)),
-            inputs=[char_name, genre, history_state, thread_id_state],
-            outputs=[history_state, thread_id_state, char_name_state, genre_state, transition_pending, transition_deadline, chatbot],
+          fn=_begin_story_click,
+          inputs=[char_name, genre, history_state, thread_id_state],
+          outputs=[history_state, thread_id_state, char_name_state, genre_state, transition_pending, transition_deadline, chatbot],
         )
 
     return demo
