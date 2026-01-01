@@ -316,11 +316,51 @@ def build_demo(*, on_user_message, on_begin_story, on_begin_story_checked, on_co
 
         chat_screen = gr.Group(visible=False, elem_id="chat-screen")
         with chat_screen:
-            gr.Markdown("""# Fable✨Friend\n#### Your own AI story🔮""")
-            chatbot = gr.Chatbot(elem_id="chatbot", show_label=False, height=None)
+            gr.Markdown(
+                """
+<div align="center">
+
+# Fable✨Friend
+#### Your own AI story🔮
+
+</div>
+"""
+            )
+
+            gr.HTML(
+                '<div align="center"><img src="/gradio_api/file=frontend/icon.png" width="64" height="64" /></div>'
+            )
+
+            with gr.Accordion("Story settings", open=False):
+                with gr.Row(equal_height=True):
+                    char_readout = gr.Textbox(
+                        label="Character",
+                        value="Unknown Hero",
+                        interactive=False,
+                        lines=1,
+                        max_lines=1,
+                    )
+                    genre_readout = gr.Textbox(
+                        label="Genre",
+                        value="",
+                        interactive=False,
+                        lines=1,
+                        max_lines=1,
+                    )
+
+            chatbot = gr.Chatbot(
+                elem_id="chatbot",
+                show_label=False,
+                height=None,
+                placeholder="Your story begins...",
+                layout="bubble",
+                like_user_message=True,
+                avatar_images=(None, "frontend/avatar.png"),
+            )
             textbox = gr.Textbox(
                 label="Your action",
                 placeholder="What do you do? Type here...",
+                show_label=False,
             )
 
             REWIND_KEY = "__REWIND__"
@@ -355,7 +395,9 @@ def build_demo(*, on_user_message, on_begin_story, on_begin_story_checked, on_co
                 return _submit_message(REWIND_KEY, history, thread_id)
 
             def _menu_click(history, thread_id):
-                return _submit_message(MENU_KEY, history, thread_id)
+                out = _submit_message(MENU_KEY, history, thread_id)
+                # Clear readouts when returning to menu.
+                return (*out, "Unknown Hero", "")
 
             def _continue_click(history, thread_id):
                 new_history, new_thread_id, _images = on_continue_story(history, thread_id)
@@ -377,10 +419,10 @@ def build_demo(*, on_user_message, on_begin_story, on_begin_story_checked, on_co
                 ],
             )
 
-            with gr.Row():
-                continue_btn = gr.Button("Continue")
-                rewind_btn = gr.Button("Rewind")
-                menu_btn = gr.Button("Menu")
+            with gr.Row(equal_height=True):
+                continue_btn = gr.Button("Continue", scale=2, min_width=160)
+                rewind_btn = gr.Button("Rewind", scale=1, min_width=140)
+                menu_btn = gr.Button("Menu", scale=1, min_width=120)
 
             continue_btn.click(
                 fn=_continue_click,
@@ -417,6 +459,8 @@ def build_demo(*, on_user_message, on_begin_story, on_begin_story_checked, on_co
                     chat_screen,
                     transition_pending,
                     transition_deadline,
+                    char_readout,
+                    genre_readout,
                 ],
             )
 
@@ -478,19 +522,20 @@ def build_demo(*, on_user_message, on_begin_story, on_begin_story_checked, on_co
         )
 
         def _begin_story_click(n, g, h, t):
-          out = on_begin_story_checked(n, g, h, t)
-          new_history = out[0]
-          new_thread_id = out[1]
-          new_char_name = out[2]
-          new_genre = out[3]
-          pending = out[4]
-          deadline = out[5]
-          return new_history, new_thread_id, new_char_name, new_genre, pending, deadline, new_history
+            out = on_begin_story_checked(n, g, h, t)
+            new_history = out[0]
+            new_thread_id = out[1]
+            new_char_name = out[2]
+            new_genre = out[3]
+            pending = out[4]
+            deadline = out[5]
+            display_char_name = (new_char_name or "").strip() or "Unknown Hero"
+            return new_history, new_thread_id, new_char_name, new_genre, pending, deadline, new_history, display_char_name, new_genre
 
         begin_btn.click(
-          fn=_begin_story_click,
-          inputs=[char_name, genre, history_state, thread_id_state],
-          outputs=[history_state, thread_id_state, char_name_state, genre_state, transition_pending, transition_deadline, chatbot],
+            fn=_begin_story_click,
+            inputs=[char_name, genre, history_state, thread_id_state],
+            outputs=[history_state, thread_id_state, char_name_state, genre_state, transition_pending, transition_deadline, chatbot, char_readout, genre_readout],
         )
 
     return demo

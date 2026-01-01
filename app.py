@@ -854,6 +854,11 @@ if __name__ == "__main__":
                             primary_hue="purple",
                             secondary_hue="yellow",
                             neutral_hue="slate",
+                            text_size=gr.themes.sizes.text_md,
+                            radius_size=gr.themes.sizes.radius_md,
+                            ).set(
+                            input_background_fill="#0f1116",
+                            input_background_fill_dark="#0f1116",
                             ),
                         css=CSS,
                         head=HEAD,
