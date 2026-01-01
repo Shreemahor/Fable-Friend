@@ -1,5 +1,6 @@
 import gradio as gr
 import time
+import html
 
 
 HEAD = """
@@ -25,6 +26,24 @@ CSS = """
   --gold-secondary: #FF8C00;
   --purple-dark: #2e0249;
   --purple-deep: #1a0b2e;
+}
+
+.readout-box {
+  background: var(--purple-dark) !important;
+  color: #ffffff !important;
+  border: 1px solid rgba(255, 215, 0, 0.35) !important;
+  border-radius: 12px;
+  padding: 10px 12px;
+}
+
+.readout-box .readout-label {
+  opacity: 0.9;
+  font-weight: 700;
+  margin-bottom: 2px;
+}
+
+.readout-box .readout-value {
+  opacity: 0.95;
 }
 
 body {
@@ -254,6 +273,18 @@ def check_finish_animation(is_pending, deadline):
     )
 
 
+def _render_readout(label, value):
+  safe_label = html.escape(label or "")
+  safe_value = html.escape((value or "").strip())
+  return (
+    f'<div class="readout-box">'
+    f'<div class="readout-label">{safe_label}</div>'
+    f'<div class="readout-value">{safe_value}</div>'
+    f'</div>'
+  )
+
+
+# on_begin_story not used but used in app.py and kept here for reference
 def build_demo(*, on_user_message, on_begin_story, on_begin_story_checked, on_continue_story, on_rewind_story, on_menu_story) -> gr.Blocks:
 
     with gr.Blocks(fill_height=True) as demo:
@@ -331,22 +362,13 @@ def build_demo(*, on_user_message, on_begin_story, on_begin_story_checked, on_co
                 '<div align="center"><img src="/gradio_api/file=frontend/icon.png" width="64" height="64" /></div>'
             )
 
-            with gr.Accordion("Story settings", open=False):
-                with gr.Row(equal_height=True):
-                    char_readout = gr.Textbox(
-                        label="Character",
-                        value="Unknown Hero",
-                        interactive=False,
-                        lines=1,
-                        max_lines=1,
-                    )
-                    genre_readout = gr.Textbox(
-                        label="Genre",
-                        value="",
-                        interactive=False,
-                        lines=1,
-                        max_lines=1,
-                    )
+            with gr.Accordion("Story Settings ⚙️: ", open=False):
+              char_readout = gr.HTML(
+                value=_render_readout("Character: ", "Unknown Hero"),
+              )
+              genre_readout = gr.HTML(
+                value=_render_readout("Genre: ", ""),
+              )
 
             chatbot = gr.Chatbot(
                 elem_id="chatbot",
@@ -397,7 +419,7 @@ def build_demo(*, on_user_message, on_begin_story, on_begin_story_checked, on_co
             def _menu_click(history, thread_id):
                 out = _submit_message(MENU_KEY, history, thread_id)
                 # Clear readouts when returning to menu.
-                return (*out, "Unknown Hero", "")
+                return (*out, _render_readout("Character", "Unknown Hero"), _render_readout("Genre", ""))
 
             def _continue_click(history, thread_id):
                 new_history, new_thread_id, _images = on_continue_story(history, thread_id)
@@ -530,7 +552,17 @@ def build_demo(*, on_user_message, on_begin_story, on_begin_story_checked, on_co
             pending = out[4]
             deadline = out[5]
             display_char_name = (new_char_name or "").strip() or "Unknown Hero"
-            return new_history, new_thread_id, new_char_name, new_genre, pending, deadline, new_history, display_char_name, new_genre
+            return (
+                new_history,
+                new_thread_id,
+                new_char_name,
+                new_genre,
+                pending,
+                deadline,
+                new_history,
+                _render_readout("Character", display_char_name),
+                _render_readout("Genre", new_genre),
+            )
 
         begin_btn.click(
             fn=_begin_story_click,
