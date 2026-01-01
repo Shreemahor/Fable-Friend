@@ -357,9 +357,8 @@ def build_demo(*, on_user_message, on_begin_story, on_begin_story_checked, on_co
 </div>
 """
             )
-
             gr.HTML(
-                '<div align="center"><img src="/gradio_api/file=frontend/icon.png" width="64" height="64" /></div>'
+                '<div align="center"><img src="/gradio_api/file=frontend/icon.png" width="120" height="120" /></div>'
             )
 
             with gr.Accordion("Story Settings ⚙️: ", open=False):

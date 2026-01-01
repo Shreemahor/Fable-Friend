@@ -720,26 +720,9 @@ def initialize_state(char_name, genre) -> dict:
 
 
 
-
-
-
-
-
-    # wrepalcing reall llm call temporarliy to prevent api
-    # written_intro = llm.invoke([SystemMessage(content=intro_prompt)]).content
-    written_intro = 'Just testing'
-
-
-
-
-
-
-
-
-
-
-
-
+    #  no longer repalcing reall llm call temporarliy to prevent api
+    written_intro = llm.invoke([SystemMessage(content=intro_prompt)]).content
+    # written_intro = 'Just testing'
 
 
 
