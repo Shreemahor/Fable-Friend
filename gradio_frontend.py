@@ -27,12 +27,11 @@ CSS = """
   --purple-deep: #1a0b2e;
 }
 
-body, .gradio-container {
+body {
+  margin: 0 !important;
   background-color: var(--bg-dark) !important;
   color: #e9edf5 !important;
   font-family: 'Lato', sans-serif !important;
-  overflow: hidden;
-  height: 100vh;
 }
 
 /*
@@ -255,9 +254,9 @@ def check_finish_animation(is_pending, deadline):
     )
 
 
-def build_demo(*, on_user_message, on_begin_story, on_begin_story_checked, on_continue_story) -> gr.Blocks:
+def build_demo(*, on_user_message, on_begin_story, on_begin_story_checked, on_continue_story, on_rewind_story, on_menu_story) -> gr.Blocks:
 
-    with gr.Blocks() as demo:
+    with gr.Blocks(fill_height=True) as demo:
         
         transition_pending = gr.State(False)
         transition_deadline = gr.State(0.0)
@@ -317,10 +316,30 @@ def build_demo(*, on_user_message, on_begin_story, on_begin_story_checked, on_co
 
         chat_screen = gr.Group(visible=False, elem_id="chat-screen")
         with chat_screen:
-            chat = gr.Chatbot()
-            image_panel = gr.Image(show_label=False, interactive=False)
-            box = gr.Textbox(label="Your action", placeholder="What do you do? Type here...")
-            continue_btn = gr.Button("Continue", elem_classes=["btn-magic"])
+          chatbot = gr.Chatbot(elem_id="chatbot", show_label=False, height=None)
+          textbox = gr.Textbox(
+              label="Your action",
+              placeholder="What do you do? Type here...",
+          )
+
+          def _chat_fn(message, history, thread_id):
+              _ignored_box, new_history, new_thread_id, *_rest = on_user_message(message, history, thread_id)
+              assistant_text = ""
+              if isinstance(new_history, list):
+                  for item in reversed(new_history):
+                      if isinstance(item, dict) and item.get("role") == "assistant":
+                          assistant_text = str(item.get("content") or "")
+                          break
+              return assistant_text, new_history, new_thread_id
+
+          gr.ChatInterface(
+              fn=_chat_fn,
+              chatbot=chatbot,
+              textbox=textbox,
+              additional_inputs=[thread_id_state],
+              additional_outputs=[history_state, thread_id_state],
+              fill_height=True,
+          )
 
         transition_timer.tick(
             fn=check_finish_animation,
@@ -380,24 +399,9 @@ def build_demo(*, on_user_message, on_begin_story, on_begin_story_checked, on_co
         )
 
         begin_btn.click(
-            fn=on_begin_story_checked,
+            fn=lambda n, g, h, t: (lambda out: (out[0], out[1], out[2], out[3], out[4], out[5], out[0]))(on_begin_story_checked(n, g, h, t)),
             inputs=[char_name, genre, history_state, thread_id_state],
-            outputs=[history_state, thread_id_state, char_name_state, genre_state,
-               transition_pending, transition_deadline, image_panel],
+            outputs=[history_state, thread_id_state, char_name_state, genre_state, transition_pending, transition_deadline, chatbot],
         )
-
-        box.submit(
-            fn=on_user_message,
-            inputs=[box, history_state, thread_id_state],
-          outputs=[box, history_state, thread_id_state, title_screen, crystal_ball_screen, chat_screen, transition_pending, transition_deadline, image_panel]
-        )
-
-        continue_btn.click(
-            fn=on_continue_story,
-            inputs=[history_state, thread_id_state],
-          outputs=[history_state, thread_id_state, image_panel],
-        )
-
-        history_state.change(fn=lambda h: h, inputs=[history_state], outputs=[chat])
 
     return demo

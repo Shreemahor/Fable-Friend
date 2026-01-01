@@ -47,6 +47,19 @@ def _image_payload_to_pil(image_payload: Any) -> Any:
             return None
     return image_payload
 
+
+def _image_payloads_to_pil_list(image_payloads: Any) -> list[Any]:
+    if not image_payloads:
+        return []
+    if not isinstance(image_payloads, list):
+        return []
+    out: list[Any] = []
+    for item in image_payloads:
+        pil = _image_payload_to_pil(item)
+        if pil is not None:
+            out.append(pil)
+    return out
+
 from langchain_groq import ChatGroq
 llm = ChatGroq(model="openai/gpt-oss-120b", temperature=0.7)
 llm2 = ChatGroq(model="llama-3.1-8b-instant", temperature=0.7)
@@ -66,7 +79,7 @@ def _make_thread_id():
     return str(uuid.uuid4())
 
 
-def _replay_thread(*, starter: dict, inputs: List[str]) -> tuple[list, str, Any]:
+def _replay_thread(*, starter: dict, inputs: List[str]) -> tuple[list, str, Any, list[Any]]:
     """Rebuild a thread by replaying inputs from the same starter into a new thread_id."""
     new_thread_id = _make_thread_id()
     cfg = {"configurable": {"thread_id": new_thread_id}}
@@ -75,11 +88,15 @@ def _replay_thread(*, starter: dict, inputs: List[str]) -> tuple[list, str, Any]
     opening, opening_image = run_until_interrupt(app, starter, config=cfg)
     history.append({"role": "assistant", "content": opening})
     last_image = opening_image
+    images: list[Any] = []
+    if opening_image is not None:
+        images.append(opening_image)
 
     for msg in inputs:
         next_scene, new_image = run_until_interrupt(app, Command(resume=msg), config=cfg)
         if new_image is not None:
             last_image = new_image
+            images.append(new_image)
         history.extend(
             [
                 {"role": "user", "content": "(Continue the story)" if msg == CONTINUE_KEY else msg},
@@ -87,7 +104,7 @@ def _replay_thread(*, starter: dict, inputs: List[str]) -> tuple[list, str, Any]
             ]
         )
 
-    return history, new_thread_id, last_image
+    return history, new_thread_id, last_image, images
 
 
 def _safe_parse_json_object(text: str) -> Dict[str, Any]:
@@ -381,7 +398,7 @@ def get_image(state: Story):
     # (turn_count is incremented in storyteller, so intro is typically turn==1.)
     should_generate_image = bool(state.get("is_key_event")) or ((turn % 3) == 1)
 
-    if should_generate_image:
+    if should_generate_image and False:  # temporarily disable image generation
         scene_text = ""
         try:
             scene_text = str(state.get("situation")[-1].content)
@@ -478,7 +495,7 @@ graph.set_finish_point("end")  # even though you will never reach this
 
 memory = MemorySaver()
 app = graph.compile(checkpointer=memory)
-print("DEBUG: Graph structure:\n", app.get_graph().draw_ascii())
+# print("DEBUG: Graph structure:\n", app.get_graph().draw_ascii())
 
 
 config = {"configurable": {
@@ -543,7 +560,7 @@ def on_user_message(user_message, history, thread_id):
     msg = (user_message or "").strip()
     if not msg:
         meta = THREAD_META.get(thread_id or "") or {}
-        return "", history, thread_id, gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), _image_payload_to_pil(meta.get("last_image"))
+        return "", history, thread_id, gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), _image_payloads_to_pil_list(meta.get("images") or [])
 
     # MENU: return to crystal selection (clears current thread).
     if msg.lower() == "start" or msg == MENU_KEY or msg == "___MENU__":
@@ -558,7 +575,7 @@ def on_user_message(user_message, history, thread_id):
             gr.update(visible=False),
             False,
             0.0,
-            None,
+            [],
         )
 
     # REWIND: drop the last user+assistant pair by replaying prior inputs.
@@ -581,15 +598,16 @@ def on_user_message(user_message, history, thread_id):
 
         inputs.pop()  # remove last input
         starter = meta.get("starter") or {}
-        new_history, new_thread_id, last_image = _replay_thread(starter=starter, inputs=inputs)
+        new_history, new_thread_id, last_image, images = _replay_thread(starter=starter, inputs=inputs)
         THREAD_META.pop(thread_id, None)
         THREAD_META[new_thread_id] = {
             "starter": starter,
             "inputs": inputs,
             "grace_next": was_game_over,
             "last_image": last_image,
+            "images": images,
         }
-        return "", new_history, new_thread_id, gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), _image_payload_to_pil(last_image)
+        return "", new_history, new_thread_id, gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), _image_payloads_to_pil_list(images)
 
     meta = THREAD_META.get(thread_id or "")
     if not meta:
@@ -623,10 +641,19 @@ def on_user_message(user_message, history, thread_id):
 
     if new_image is not None:
         meta["last_image"] = new_image
-    image_to_show = meta.get("last_image")
+        meta.setdefault("images", []).append(new_image)
+    images_to_show = meta.get("images") or []
 
     history = (history or []) + [{"role": "user", "content": msg}, {"role": "assistant", "content": next_scene}]
-    return "", history, thread_id, gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), _image_payload_to_pil(image_to_show)
+    return "", history, thread_id, gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), _image_payloads_to_pil_list(images_to_show)
+
+
+def on_menu_click(history, thread_id):
+    return on_user_message(MENU_KEY, history, thread_id)
+
+
+def on_rewind_click(history, thread_id):
+    return on_user_message(REWIND_KEY, history, thread_id)
 
 
 def initialize_state(char_name, genre) -> dict:
@@ -649,7 +676,31 @@ def initialize_state(char_name, genre) -> dict:
     print("theme is ", theme)
 
     intro_prompt = INTRO_PROMPT_TEMPLATE.format(theme=theme, char_name=char_name)
-    written_intro = llm.invoke([SystemMessage(content=intro_prompt)]).content
+
+
+
+
+
+
+
+
+    # wrepalcing reall llm call temporarliy to prevent api
+    # written_intro = llm.invoke([SystemMessage(content=intro_prompt)]).content
+    written_intro = 'Just testing'
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
     return {
         "intro_text": written_intro,
@@ -689,7 +740,10 @@ def on_begin_story(char_name, genre, history, thread_id):
     opening, opening_image = run_until_interrupt(app, starter, config={"configurable": {"thread_id": thread_id}})
     history = (history or []) + [{"role": "assistant", "content": opening}]
 
-    THREAD_META[thread_id] = {"starter": starter, "inputs": [], "last_image": opening_image}
+    images: list[Any] = []
+    if opening_image is not None:
+        images.append(opening_image)
+    THREAD_META[thread_id] = {"starter": starter, "inputs": [], "last_image": opening_image, "images": images}
 
     # return for gradio
     return (
@@ -699,7 +753,7 @@ def on_begin_story(char_name, genre, history, thread_id):
         genre,
         True,
         time.time() + 3.5,  # animation timing
-        _image_payload_to_pil(opening_image),
+        _image_payloads_to_pil_list(images),
     )
 
 def continue_story(history, thread_id):
@@ -727,7 +781,17 @@ def continue_story(history, thread_id):
 
     if new_image is not None:
         meta["last_image"] = new_image
-    return history, thread_id, _image_payload_to_pil(meta.get("last_image"))
+        meta.setdefault("images", []).append(new_image)
+
+    # Continue should NOT add a user message; it should append to the last assistant response.
+    history = list(history or [])
+    if history and isinstance(history[-1], dict) and history[-1].get("role") == "assistant":
+        prior = str(history[-1].get("content") or "")
+        history[-1]["content"] = (prior + "\n\n" + next_scene).strip() if prior else next_scene
+    else:
+        history.append({"role": "assistant", "content": next_scene})
+
+    return history, thread_id, _image_payloads_to_pil_list(meta.get("images") or [])
 
 
 from gradio_frontend import build_demo, CSS, HEAD
@@ -736,6 +800,8 @@ demo = build_demo(
     on_begin_story=on_begin_story,
     on_begin_story_checked=on_begin_story_checked,
     on_continue_story=continue_story,
+    on_rewind_story=on_rewind_click,
+    on_menu_story=on_menu_click,
 )
 if __name__ == "__main__":
     demo.queue().launch(theme=gr.themes.Soft(
