@@ -1,4 +1,5 @@
 import os
+import io
 from langchain_openai import ChatOpenAI
 from typing import TypedDict, Annotated, List, Dict, Any
 import json
@@ -13,6 +14,8 @@ import uuid
 
 # Miscallenous variables and setup
 
+from huggingface_hub import InferenceClient
+from PIL import Image
 import gradio as gr
 import time
 from file_of_prompts import (
@@ -20,6 +23,7 @@ from file_of_prompts import (
     INTRO_PROMPT_TEMPLATE,
     STORYTELLER_PROMPT_TEMPLATE,
     ADJUDICATION_PROMPT_TEMPLATE,
+    IMAGE_PROMPT_BY_SYSTEM,
 )
 CONTINUE_KEY = "__CONTINUE__"
 REWIND_KEY = "__REWIND__"
@@ -28,6 +32,20 @@ THREAD_META: Dict[str, Dict[str, Any]] = {}
 # Marker used for one-turn grace period after retrying from GAME OVER.
 # This is intentionally stripped from what the storyteller sees.
 GRACE_PERIOD_INVISIBLE_TELLER = "grace_period:"
+
+
+def _image_payload_to_pil(image_payload: Any) -> Any:
+    """Convert a msgpack-serializable image payload (PNG bytes) into a PIL Image for Gradio."""
+    if image_payload is None:
+        return None
+    if isinstance(image_payload, Image.Image):
+        return image_payload
+    if isinstance(image_payload, (bytes, bytearray)):
+        try:
+            return Image.open(io.BytesIO(image_payload))
+        except Exception:
+            return None
+    return image_payload
 
 from langchain_groq import ChatGroq
 llm = ChatGroq(model="openai/gpt-oss-120b", temperature=0.7)
@@ -48,17 +66,20 @@ def _make_thread_id():
     return str(uuid.uuid4())
 
 
-def _replay_thread(*, starter: dict, inputs: List[str]) -> tuple[list, str]:
+def _replay_thread(*, starter: dict, inputs: List[str]) -> tuple[list, str, Any]:
     """Rebuild a thread by replaying inputs from the same starter into a new thread_id."""
     new_thread_id = _make_thread_id()
     cfg = {"configurable": {"thread_id": new_thread_id}}
 
     history: list[dict] = []
-    opening = run_until_interrupt(app, starter, config=cfg)
+    opening, opening_image = run_until_interrupt(app, starter, config=cfg)
     history.append({"role": "assistant", "content": opening})
+    last_image = opening_image
 
     for msg in inputs:
-        next_scene = run_until_interrupt(app, Command(resume=msg), config=cfg)
+        next_scene, new_image = run_until_interrupt(app, Command(resume=msg), config=cfg)
+        if new_image is not None:
+            last_image = new_image
         history.extend(
             [
                 {"role": "user", "content": "(Continue the story)" if msg == CONTINUE_KEY else msg},
@@ -66,7 +87,7 @@ def _replay_thread(*, starter: dict, inputs: List[str]) -> tuple[list, str]:
             ]
         )
 
-    return history, new_thread_id
+    return history, new_thread_id, last_image
 
 
 def _safe_parse_json_object(text: str) -> Dict[str, Any]:
@@ -106,6 +127,11 @@ class Story(TypedDict):
     last_action_raw: str
     last_action: str
     progress: int
+    is_key_event: bool  # True on the intro turn and on milestone scenes.
+
+    img_generation_rules: str
+    last_image_prompt: str
+    last_image: Any
 
 
 def storyteller(state: Story): 
@@ -120,6 +146,8 @@ def storyteller(state: Story):
             return {
                 "situation": [AIMessage(content=intro)],
                 "turn_count": turn_count + 1,
+                # Intro is a key scene for generating the first image.
+                "is_key_event": True,
             }
     ai_messages = [m for m in state["situation"] if isinstance(m, AIMessage)]
 
@@ -147,8 +175,8 @@ def storyteller(state: Story):
         last_action_raw = last_action_raw[len(GRACE_PERIOD_INVISIBLE_TELLER):].lstrip()
     is_continue = (last_action == CONTINUE_KEY)
     progress = int(state.get("progress")) or 0
-    is_milestone = (progress >= 100)
-    length_rule = "12-18 sentences" if is_milestone else ("2-3 sentences" if is_continue else "5-6 sentences")
+    is_key_event = (progress >= 100)
+    length_rule = "12-18 sentences" if is_key_event else ("2-3 sentences" if is_continue else "5-6 sentences")
 
     phase = "early" if progress < 34 else ("mid" if progress < 67 else ("late" if progress < 100 else "milestone"))
 
@@ -156,9 +184,9 @@ def storyteller(state: Story):
     existing_names = ", ".join(named_entities) if named_entities else "(none yet)"
     turn_count = int(state.get("turn_count")) or 0
     # every 3 turns (but milestones always end with a hook)
-    should_ask_question = True if is_milestone else ((turn_count % 3) == 0)
+    should_ask_question = True if is_key_event else ((turn_count % 3) == 0)
     # every other turn (but milestones may introduce a major new thread)
-    allow_new_proper_noun = True if is_milestone else ((turn_count % 2) == 0)
+    allow_new_proper_noun = True if is_key_event else ((turn_count % 2) == 0)
 
     prompt = STORYTELLER_PROMPT_TEMPLATE.format(
         length_rule=length_rule,
@@ -176,18 +204,21 @@ def storyteller(state: Story):
 
     continuation = llm.invoke([SystemMessage(content=prompt)]).content
 
-    if is_milestone:
+    if is_key_event:
         print("[storyteller_node] Milestone scene generated. Resetting progress.")
         return {
             "situation": [AIMessage(content=continuation)],
             "turn_count": turn_count + 1,
             "progress": 0,
+            # Preserve milestone info for the image node (progress is reset here).
+            "is_key_event": True,
         }
 
     print(f"[storyteller_node] Generated situation:\n{continuation}\n")
     return {
        "situation": [AIMessage(content=continuation)],
        "turn_count": turn_count + 1,
+         "is_key_event": False,
     }
 
 
@@ -232,7 +263,7 @@ def judger_improver(state: Story):
     tension_change = int(obj.get("tension_change") or obj.get("tension_delta") or 0)
     progress_change = int(obj.get("progress_change") or obj.get("progress_delta") or 0)
 
-    # One-turn grace after rewinding from a GAME OVER: avoid instant re-death.
+    # One-turn grace period after rewinding from a GAME OVER: avoid instant re-death
     if grace_turn and verdict == "game_over":
         verdict = "redirect"
         if not consequence:
@@ -240,7 +271,7 @@ def judger_improver(state: Story):
         if progress_change < 1:
             progress_change = 1
 
-    # Clamp and apply.
+    # Clamp and apply
     if tension_change < -2:
         tension_change = -2
     if tension_change > 3:
@@ -251,7 +282,7 @@ def judger_improver(state: Story):
     if progress_change > 20:
         progress_change = 20
 
-    # Continuation chains should still move progress meaningfully.
+    # Continuation still actually advances still.
     if raw_action == CONTINUE_KEY and progress_change < 4:
         progress_change = 4
 
@@ -264,11 +295,10 @@ def judger_improver(state: Story):
     if new_name and (new_name not in named_entities) and (len(named_entities) < 12):
         named_entities.append(new_name)
 
-    # Ensure Continue uses a stable token so storyteller can pace correctly.
     if resolved_action.upper() == "CONTINUE" or resolved_action == CONTINUE_KEY:
         resolved_action = CONTINUE_KEY
 
-    # Build a small consequence blurb that the storyteller must incorporate.
+    # Get consequence blurb that the storyteller must incorporate.
     consequence_blurb = ("" if not consequence else f"Immediate consequence: {consequence}")
 
     if verdict == "game_over":
@@ -335,8 +365,95 @@ def user(state: Story):
         goto="judger_improver",
     )
 
+
+def get_image(state: Story):
+
+    print("[image_node] At image node")
+
+    hf_token = os.environ.get("HF_TOKEN")
+    if not hf_token:
+        print("[image_node] HF_TOKEN not set so skipping image generation")
+        return {}
+    client = InferenceClient(provider="nebius", api_key=hf_token)
+
+    turn = int(state.get("turn_count")) or 0
+    # Cadence: intro/milestone scenes always generate; otherwise generate every 3 turns.
+    # (turn_count is incremented in storyteller, so intro is typically turn==1.)
+    should_generate_image = bool(state.get("is_key_event")) or ((turn % 3) == 1)
+
+    if should_generate_image:
+        scene_text = ""
+        try:
+            scene_text = str(state.get("situation")[-1].content)
+        except Exception:  # if something goes wrong
+            scene_text = ""
+
+        img_generation_rules = (state.get("img_generation_rules") or "").strip()
+        last_image_prompt = (state.get("last_image_prompt") or "").strip()
+        theme = (state.get("theme") or "fantasy").strip()
+        char_name = (state.get("char_name") or "Unknown Hero").strip()
+
+        # this runs only once to establish the image generation guidelines for the rest of the story
+        if not img_generation_rules:
+            rule_prompt = (
+                "You are creating a compact visual bible for a story-to-image generator.\n"
+                "Return ONLY plain text (no JSON), 6-10 lines max.\n\n"
+                "Include:\n"
+                "1) A fixed art direction line (medium, framing, lighting, mood) that should NEVER change across images.\n"
+                "2) The protagonist's stable appearance description (face/hair/age, clothing silhouette, signature item).\n"
+                "3) 2-4 stable motifs/props that can recur.\n"
+                "Avoid introducing new proper nouns unless already present.\n\n"
+                f"Theme: {theme}\n"
+                f"Protagonist name: {char_name}\n\n"
+                "Foundational intro:\n"
+                f"{(state.get('intro_text') or '').strip()}"
+            )
+            img_generation_rules = llm2.invoke([SystemMessage(content=rule_prompt)]).content
+
+        print("DEBUG Image generation rules:\n", img_generation_rules)
+        # this runs every time a image is needed to generate the prompt
+        # IMAGE_PROMPT_BY_SYSTEM basically says "You are a image prompt engineer"
+        # image_prompt_human basically says "Here are the rules and specifics"
+        image_prompt_human = (
+            f"VISUAL BIBLE (must stay consistent):\n{img_generation_rules}\n\n"
+            + (f"PREVIOUS IMAGE PROMPT (keep continuity):\n{last_image_prompt}\n\n" if last_image_prompt else "")
+            + f"SCENE TO DEPICT:\n{scene_text}\n\n"
+            + "Write the diffusion prompt now."
+        )
+        image_prompt = llm2.invoke(
+            [SystemMessage(content=IMAGE_PROMPT_BY_SYSTEM), HumanMessage(content=image_prompt_human)]
+        ).content.strip()
+        print("DEBUG Generated image prompt:\n", image_prompt)
+
+        # output is a PIL.Image object
+        image = client.text_to_image(
+            image_prompt,
+            model="black-forest-labs/FLUX.1-schnell",
+        )
+
+        # IMPORTANT: Do NOT store a PIL Image in LangGraph state.
+        # MemorySaver checkpoints serialize state via msgpack and PIL objects are not serializable.
+        buf = io.BytesIO()
+        try:
+            image.convert("RGB").save(buf, format="PNG", optimize=True)
+        except Exception:
+            image.save(buf, format="PNG")
+        image_bytes = buf.getvalue()
+
+        return {
+            "last_image": image_bytes,
+            "last_image_prompt": image_prompt,
+            "img_generation_rules": img_generation_rules,
+            # Reset key-scene flag
+            "is_key_event": False,
+        }
+    else:
+        print("[image_node] No need for image generation this turn.")
+        return {}
+
+
 def end(state: Story):
-    print("\n\n\nThe end of your adventure!")
+    print("\n\n\nThe end of your adventure!")  # just for reference even though unreachable
 
 
 graph = StateGraph(Story)
@@ -344,29 +461,36 @@ graph = StateGraph(Story)
 graph.add_node("storyteller", storyteller)
 graph.add_node("user", user)
 graph.add_node("judger_improver", judger_improver)
+graph.add_node("image", get_image)
 graph.add_node("end", end)
 
 graph.set_entry_point("storyteller")
 
 graph.add_edge(START, "storyteller")
-graph.add_edge("storyteller", "user")
-
-# user -> adjudicator -> storyteller or the end
+# Run image generation BEFORE the interrupting user node so the image update
+# isn't skipped/canceled when the graph hits interrupt().
+graph.add_edge("storyteller", "image")
+graph.add_edge("image", "user")
+# user -> adjudicator -> storyteller
 graph.add_edge("user", "judger_improver")
 
-graph.set_finish_point("end")
+graph.set_finish_point("end")  # even though you will never reach this
 
 memory = MemorySaver()
 app = graph.compile(checkpointer=memory)
+print("DEBUG: Graph structure:\n", app.get_graph().draw_ascii())
 
 
 config = {"configurable": {
     "thread_id": uuid.uuid4()
 }}
+
+# This part is not actually used or important, it's just an old version, kept for testing
 initial_scene = "There are two paths ahead of you in a dark forest: one leading to a spooky castle, the other to a serene lake."
+
 initial_state = {
-    "intro_text": initial_scene,
-    "story_summary": initial_scene,
+    "intro_text": "Nothing for now",
+    "story_summary": "Nothing for now",
     "situation": [],
     "your_action": [],
     "theme": "fantasy",
@@ -379,6 +503,10 @@ initial_state = {
     "last_action_raw": "",
     "last_action": "",
     "progress": 0,
+    "is_key_event": False,
+    "img_generation_rules": "",
+    "last_image_prompt": "",
+    "last_image": None,
 }
 
 
@@ -387,17 +515,22 @@ initial_state = {
 
 def run_until_interrupt(app, starter, config):
     latest_message = "Nothing for now"
+    latest_image = None
 
     for chunk in app.stream(starter, config=config):
         for node_id, value in chunk.items():
             if isinstance(value, dict) and value.get("situation"):
                 latest_message = getattr(value["situation"][-1],
                                           "content", str(value["situation"][-1]))
+
+            if isinstance(value, dict) and ("last_image" in value):
+                if value.get("last_image") is not None:
+                    latest_image = value.get("last_image")
                 
         if "__interrupt__" in chunk:
             break
                 
-    return latest_message
+    return latest_message, latest_image
 
 
 def on_app_start():
@@ -409,7 +542,8 @@ def on_app_start():
 def on_user_message(user_message, history, thread_id):
     msg = (user_message or "").strip()
     if not msg:
-        return "", history, thread_id, gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
+        meta = THREAD_META.get(thread_id or "") or {}
+        return "", history, thread_id, gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), _image_payload_to_pil(meta.get("last_image"))
 
     # MENU: return to crystal selection (clears current thread).
     if msg.lower() == "start" or msg == MENU_KEY or msg == "___MENU__":
@@ -424,6 +558,7 @@ def on_user_message(user_message, history, thread_id):
             gr.update(visible=False),
             False,
             0.0,
+            None,
         )
 
     # REWIND: drop the last user+assistant pair by replaying prior inputs.
@@ -439,17 +574,22 @@ def on_user_message(user_message, history, thread_id):
 
         meta = THREAD_META.get(thread_id or "")
         if not meta:
-            return "", history, thread_id, gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
+            return "", history, thread_id, gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
         inputs = list(meta.get("inputs") or [])
         if not inputs:
-            return "", history, thread_id, gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
+            return "", history, thread_id, gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
 
         inputs.pop()  # remove last input
         starter = meta.get("starter") or {}
-        new_history, new_thread_id = _replay_thread(starter=starter, inputs=inputs)
+        new_history, new_thread_id, last_image = _replay_thread(starter=starter, inputs=inputs)
         THREAD_META.pop(thread_id, None)
-        THREAD_META[new_thread_id] = {"starter": starter, "inputs": inputs, "grace_next": was_game_over}
-        return "", new_history, new_thread_id, gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
+        THREAD_META[new_thread_id] = {
+            "starter": starter,
+            "inputs": inputs,
+            "grace_next": was_game_over,
+            "last_image": last_image,
+        }
+        return "", new_history, new_thread_id, gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), _image_payload_to_pil(last_image)
 
     meta = THREAD_META.get(thread_id or "")
     if not meta:
@@ -463,6 +603,7 @@ def on_user_message(user_message, history, thread_id):
             gr.update(visible=False),
             False,
             0.0,
+            None,
         )
 
     meta.setdefault("inputs", []).append(msg)
@@ -472,12 +613,20 @@ def on_user_message(user_message, history, thread_id):
         meta["grace_next"] = False
         msg_for_graph = GRACE_PERIOD_INVISIBLE_TELLER + msg
 
-    next_scene = run_until_interrupt(app, Command(resume=msg_for_graph), config={"configurable": {"thread_id": thread_id}})
+    next_scene, new_image = run_until_interrupt(
+        app,
+        Command(resume=msg_for_graph),
+        config={"configurable": {"thread_id": thread_id}},
+    )
     if next_scene == "Nothing for now":
         next_scene = "The story has ended. Type __REWIND__ to rewind, or __MENU__ to return to the menu."
 
+    if new_image is not None:
+        meta["last_image"] = new_image
+    image_to_show = meta.get("last_image")
+
     history = (history or []) + [{"role": "user", "content": msg}, {"role": "assistant", "content": next_scene}]
-    return "", history, thread_id, gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
+    return "", history, thread_id, gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), _image_payload_to_pil(image_to_show)
 
 
 def initialize_state(char_name, genre) -> dict:
@@ -517,6 +666,11 @@ def initialize_state(char_name, genre) -> dict:
         "last_action_raw": "",
         "last_action": "",
         "progress": 0,
+        # Intro turn should generate the first image.
+        "is_key_event": True,
+        "img_generation_rules": "",
+        "last_image_prompt": "",
+        "last_image": None,
     }
 
 
@@ -532,10 +686,10 @@ def on_begin_story(char_name, genre, history, thread_id):
     # standard stuff
     thread_id = _make_thread_id()
     starter = initialize_state(char_name, genre)
-    opening = run_until_interrupt(app, starter, config={"configurable": {"thread_id": thread_id}})
+    opening, opening_image = run_until_interrupt(app, starter, config={"configurable": {"thread_id": thread_id}})
     history = (history or []) + [{"role": "assistant", "content": opening}]
 
-    THREAD_META[thread_id] = {"starter": starter, "inputs": []}
+    THREAD_META[thread_id] = {"starter": starter, "inputs": [], "last_image": opening_image}
 
     # return for gradio
     return (
@@ -544,19 +698,20 @@ def on_begin_story(char_name, genre, history, thread_id):
         char_name,
         genre,
         True,
-        time.time() + 3.5  # animation timing
+        time.time() + 3.5,  # animation timing
+        _image_payload_to_pil(opening_image),
     )
 
 def continue_story(history, thread_id):
     if not thread_id:
-        return history, thread_id
+        return history, thread_id, None
 
     meta = THREAD_META.get(thread_id)
     if meta is None:
-        return history, thread_id
+        return history, thread_id, None
     meta.setdefault("inputs", []).append(CONTINUE_KEY)
     
-    next_scene = run_until_interrupt(
+    next_scene, new_image = run_until_interrupt(
         app,
         Command(resume=CONTINUE_KEY),
         config={"configurable": {"thread_id": thread_id}}
@@ -570,7 +725,9 @@ def continue_story(history, thread_id):
         {"role": "assistant", "content": next_scene}
     ]
 
-    return history, thread_id
+    if new_image is not None:
+        meta["last_image"] = new_image
+    return history, thread_id, _image_payload_to_pil(meta.get("last_image"))
 
 
 from gradio_frontend import build_demo, CSS, HEAD

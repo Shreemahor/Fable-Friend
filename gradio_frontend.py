@@ -318,6 +318,7 @@ def build_demo(*, on_user_message, on_begin_story, on_begin_story_checked, on_co
         chat_screen = gr.Group(visible=False, elem_id="chat-screen")
         with chat_screen:
             chat = gr.Chatbot()
+            image_panel = gr.Image(show_label=False, interactive=False)
             box = gr.Textbox(label="Your action", placeholder="What do you do? Type here...")
             continue_btn = gr.Button("Continue", elem_classes=["btn-magic"])
 
@@ -382,19 +383,19 @@ def build_demo(*, on_user_message, on_begin_story, on_begin_story_checked, on_co
             fn=on_begin_story_checked,
             inputs=[char_name, genre, history_state, thread_id_state],
             outputs=[history_state, thread_id_state, char_name_state, genre_state,
-                     transition_pending, transition_deadline],
+               transition_pending, transition_deadline, image_panel],
         )
 
         box.submit(
             fn=on_user_message,
             inputs=[box, history_state, thread_id_state],
-          outputs=[box, history_state, thread_id_state, title_screen, crystal_ball_screen, chat_screen, transition_pending, transition_deadline]
+          outputs=[box, history_state, thread_id_state, title_screen, crystal_ball_screen, chat_screen, transition_pending, transition_deadline, image_panel]
         )
 
         continue_btn.click(
             fn=on_continue_story,
             inputs=[history_state, thread_id_state],
-            outputs=[history_state, thread_id_state],
+          outputs=[history_state, thread_id_state, image_panel],
         )
 
         history_state.change(fn=lambda h: h, inputs=[history_state], outputs=[chat])
