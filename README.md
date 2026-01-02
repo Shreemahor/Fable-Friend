@@ -2,6 +2,9 @@
 https://huggingface.co/spaces/Shreemahor/Fable-Friend
 ## Fable✨Friend: Your own AI story🔮
 ***An interactive AI story adventure with infinite possibilities, you choose what you do in your story, and AI decides what happens to your story next. With amazing genres, roles, images, and full gameplay, and more it’s your own journey.***
+![final-shortest](https://github.com/user-attachments/assets/247b44ed-1f46-40a2-bbc6-2d829877ad95)
+<img width="1704" height="904" alt="storm" src="https://github.com/user-attachments/assets/5a98aad7-8054-4186-84fc-12a0265201e5" />
+<img width="1437" height="901" alt="samurai" src="https://github.com/user-attachments/assets/b81829c5-60c1-416c-ad76-0d2b747ebc35" />
 
 ## What are it's feautures?
 
@@ -63,6 +66,11 @@ There is the /frontend folder that has ui elements like the crystal ball animati
 Hugging Face offers better image generation but Pollinations.ai is a cheaper option. The image style and general image consistency depends on the model and its adherance to the prompt.
 A bigger llm than gpt-oss-120b could possibly improve the storytelling. In the future, streaming the storyteller's response, a bigger and better image style set would be nice. It would be interesting to see how a more game based system with chapters, additional hp, or combat would work with AI. Maybe one day, users can save their story.
 
-# Credits
+## Credits
 
 Thank you to Gradio, Langchain & Langgraph, models from Groq Cloud, Hugging Face, Pollinations.ai!
+
+## More Samples of it in Action 🔮 ✨
+
+<img width="1885" height="937" alt="image" src="https://github.com/user-attachments/assets/a35598c9-c2df-4001-8f86-f70c4e2080de" />
+<img width="1880" height="894" alt="scififinal" src="https://github.com/user-attachments/assets/8bd91e6d-931e-4588-bf26-a85e30e24c7e" />
