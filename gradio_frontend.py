@@ -151,8 +151,8 @@ body {
 
 /* CRYSTAL BALLL SIZE ADJUSTS MENTS IS HERE*/
 #crystal-ball-bg lottie-player {
-  width: 700px;
-  height: 700px;
+  width: 800px;
+  height: 800px;
   filter: drop-shadow(0 0 30px rgba(91, 139, 255, 0.3));
 }
 

@@ -780,7 +780,7 @@ def on_begin_story(char_name, genre, history, thread_id):
         char_name,
         genre,
         True,
-        time.time() + 3.5,  # animation timing
+        time.time() + 0.5,  # animation timing
         _image_payloads_to_pil_list(images),
     )
 
