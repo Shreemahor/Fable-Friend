@@ -1,4 +1,5 @@
 # Fable-Friend
+https://huggingface.co/spaces/Shreemahor/Fable-Friend
 ## Fable✨Friend: Your own AI story🔮
 ***An interactive AI story adventure with infinite possibilities, you choose what you do in your story, and AI decides what happens to your story next. With amazing genres, roles, images, and full gameplay, and more it’s your own journey.***
 
@@ -16,12 +17,17 @@
 1. **Langchain and Langgraph** power the logic by storing all of your story settings and more - genre, role, name, progress, last action, world, tension, summaries, and lots more in state so the storytelling llm knows what its doing:
 
 The *main loop* is
-      ------------------------------------------------------------------------------------------------------------------------------------------------------------
-     \/                                                                                                                                                          |
-*Storyteller* uses state and knowledge to generate your story - different style and especially if you've just started or reached a milestone --->                |
-*Image* uses another llm to look at state and generate a prompt for the image generator --->                                                                     |
-*User* It's YOU! You can do something, continue, rewind, or go to the menu to start a new story --->                                                             |
-*Judger Improver* To keep you and the other nodes in check - filling the other nodes in with details and making sure you can't get away with anything ------------
+
+
+*Storyteller* uses state and knowledge to generate your story - different style and especially if you've just started or reached a milestone --->                
+
+*Image* uses another llm to look at state and generate a prompt for the image generator --->                                                                     
+
+*User* It's YOU! You can do something, continue, rewind, or go to the menu to start a new story --->                                                             
+
+*Judger Improver* To keep you and the other nodes in check - filling the other nodes in with details and making sure you can't get away with anything --------------> all the way back to Storyteller and so on
+
+
 Notes: Two models are used - gptoss-120b and llama-3.1-8b
 
 2. **Gradio** for the frontend by handling all the images, animations, buttons, dropdowns, accordian, chatinterface, displaying and supporting HTML, CSS, and JS.
