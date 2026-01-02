@@ -594,7 +594,7 @@ def get_image(state: Story):
     # (turn_count is incremented in storyteller, so intro is typically turn==1.)
     should_generate_image = bool(state.get("is_key_event")) or ((turn % 3) == 1)
 
-    if should_generate_image:
+    if should_generate_image and False:
         scene_text = ""
         try:
             scene_text = str(state.get("situation")[-1].content)
@@ -1072,7 +1072,7 @@ def on_begin_story(char_name, genre, role_id, image_style, history, thread_id):
         char_name,
         normalized_genre,
         True,
-        time.time() + 0.5,  # animation timing
+        time.time() + 0.7,  # animation timing
         _image_payloads_to_pil_list(images),
     )
 
