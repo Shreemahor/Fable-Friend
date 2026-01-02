@@ -452,9 +452,9 @@ def build_demo(*, on_user_message, on_begin_story, on_begin_story_checked, on_co
                   image_style = gr.Dropdown(
                     label="Choose your image style",
                     choices=[
-                      ("placeholder 1", "placeholder_1"),
-                      ("placeholder 2", "placeholder_2"),
-                      ("placeholder 3", "placeholder_3"),
+                      ("Cinematic Concept Art 🎬", "cinematic_concept_art"),
+                      ("Anime Cel-Shaded ✨", "anime_cel_shaded"),
+                      ("Watercolor Storybook 🎨", "watercolor_storybook"),
                     ],
                     value=None,
                     elem_id="image-style-dd",
@@ -687,7 +687,7 @@ def build_demo(*, on_user_message, on_begin_story, on_begin_story_checked, on_co
               """
         )
 
-        def _begin_story_click(n, g, r, h, t):
+        def _begin_story_click(n, g, r, s, h, t):
           if not (g or "").strip() or not (r or "").strip() or r == "__NEED_PATH__":
             return (
               h,
@@ -702,7 +702,7 @@ def build_demo(*, on_user_message, on_begin_story, on_begin_story_checked, on_co
               '<div style="color: #ffffff; font-weight: 700;">Finish your adventure\'s details!</div>',
             )
 
-          out = on_begin_story_checked(n, g, r, h, t)
+          out = on_begin_story_checked(n, g, r, (s or ""), h, t)
           new_history = out[0]
           new_thread_id = out[1]
           new_char_name = out[2]
@@ -725,7 +725,7 @@ def build_demo(*, on_user_message, on_begin_story, on_begin_story_checked, on_co
 
         begin_btn.click(
             fn=_begin_story_click,
-          inputs=[char_name, genre, role, history_state, thread_id_state],
+          inputs=[char_name, genre, role, image_style_state, history_state, thread_id_state],
           outputs=[history_state, thread_id_state, char_name_state, genre_state, transition_pending, transition_deadline, chatbot, char_readout, genre_readout, begin_warning],
         )
 

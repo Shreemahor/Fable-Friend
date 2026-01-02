@@ -1,5 +1,8 @@
 import os
 import io
+import urllib.parse
+import urllib.request
+import urllib.error
 from langchain_openai import ChatOpenAI
 from typing import TypedDict, Annotated, List, Dict, Any
 import json
@@ -99,6 +102,14 @@ ROLE_DISPLAY: Dict[str, str] = {
 }
 
 
+IMAGE_STYLE_PRESETS: Dict[str, str] = {
+    # Keep these short and model-friendly; they'll be injected into every image prompt.
+    "cinematic_concept_art": "cinematic concept art, dramatic lighting, wide shot",
+    "anime_cel_shaded": "anime cel-shaded illustration, clean lineart, vibrant colors",
+    "watercolor_storybook": "watercolor storybook illustration, soft wash, paper texture",
+}
+
+
 def _normalize_genre_for_role(*, genre: str, role_id: str) -> tuple[str, str]:
     """Return (genre, role_display) after validating role_id belongs to genre.
 
@@ -149,10 +160,46 @@ def _persist_chat_image_bytes(*, image_bytes: bytes, thread_id: str) -> str | No
         rel_path = os.path.join("frontend", "runtime_images", filename)
         with open(rel_path, "wb") as f:
             f.write(image_bytes)
+        _cleanup_runtime_images()
         return rel_path
     except Exception as e:
         print(f"[chat_image] failed to persist image: {e}")
         return None
+
+
+def _cleanup_runtime_images() -> None:
+    """Best-effort cleanup so frontend/runtime_images doesn't grow unbounded."""
+    try:
+        max_files = int(os.environ.get("RUNTIME_IMAGES_MAX_FILES") or "200")
+    except Exception:
+        max_files = 50
+
+    if max_files <= 0:
+        return
+
+    try:
+        dir_path = os.path.join("frontend", "runtime_images")
+        if not os.path.isdir(dir_path):
+            return
+        entries: list[tuple[float, str]] = []
+        for name in os.listdir(dir_path):
+            if not name.lower().endswith((".png", ".jpg", ".jpeg", ".webp")):
+                continue
+            path = os.path.join(dir_path, name)
+            try:
+                entries.append((os.path.getmtime(path), path))
+            except Exception:
+                continue
+        if len(entries) <= max_files:
+            return
+        entries.sort(key=lambda t: t[0], reverse=True)
+        for _, path in entries[max_files:]:
+            try:
+                os.remove(path)
+            except Exception:
+                continue
+    except Exception:
+        return
 
 
 def _append_real_image_message(history: list[dict], *, image_bytes: Any, thread_id: str) -> None:
@@ -283,6 +330,7 @@ class Story(TypedDict):
     theme: str
     char_name: str
     role: str
+    image_style: str
 
     world: Dict[str, Any]
     inventory: List[str]
@@ -539,10 +587,7 @@ def get_image(state: Story):
     print("[image_node] At image node")
 
     hf_token = os.environ.get("HF_TOKEN")
-    if not hf_token:
-        print("[image_node] HF_TOKEN not set so skipping image generation")
-        return {}
-    client = InferenceClient(provider="nebius", api_key=hf_token)
+    client = InferenceClient(provider="nebius", api_key=hf_token) if hf_token else None
 
     turn = int(state.get("turn_count")) or 0
     # Cadence: intro/milestone scenes always generate; otherwise generate every 3 turns.
@@ -566,6 +611,8 @@ def get_image(state: Story):
         theme = (state.get("theme") or "fantasy").strip()
         char_name = (state.get("char_name") or "Unknown Hero").strip()
         role = (state.get("role") or "Adventurer").strip()
+        image_style_id = (state.get("image_style") or "").strip()
+        image_style_preset = (IMAGE_STYLE_PRESETS.get(image_style_id) or "").strip()
 
         def _clamp_line(s: str, max_len: int) -> str:
             s = " ".join((s or "").split())
@@ -592,8 +639,9 @@ def get_image(state: Story):
                 "- Keep it generic and drawable by small models.\n\n"
                 f"Theme: {theme}\n"
                 f"Role: {role}\n"
-                "Intro (for vibe only; do not copy names/phrases):\n"
-                f"{_clamp_line((state.get('intro_text') or '').strip(), 500)}"
+                + (f"Style preference (important): {image_style_preset}\n" if image_style_preset else "")
+                + "Intro (for vibe only; do not copy names/phrases):\n"
+                + f"{_clamp_line((state.get('intro_text') or '').strip(), 500)}"
             )
             img_generation_rules = llm2.invoke([SystemMessage(content=rule_prompt)]).content
 
@@ -617,7 +665,8 @@ def get_image(state: Story):
             "- Prefer depicting the main action + environment + 1-2 key objects\n"
             "- If possible, avoid close-up portraits; show the scene/vehicles/action\n"
             "- If the player's action suggests an action shot, reflect it\n\n"
-            f"STYLE TAGS:\n{img_generation_rules}\n\n"
+            + (f"STYLE PRESET (must include in output):\n{_clamp_line(image_style_preset, 120)}\n\n" if image_style_preset else "")
+            + f"STYLE TAGS:\n{img_generation_rules}\n\n"
             + (f"PREV PROMPT (for continuity only):\n{_clamp_line(last_image_prompt, 180)}\n\n" if last_image_prompt else "")
             + (f"PLAYER ACTION (important):\n{_clamp_line(action_hint, 180)}\n\n" if action_hint else "")
             + f"SCENE TEXT (may be verbose; extract gist):\n{_clamp_line(scene_text, 600)}\n\n"
@@ -631,25 +680,98 @@ def get_image(state: Story):
             [SystemMessage(content=IMAGE_PROMPT_BY_SYSTEM), HumanMessage(content=image_prompt_human)]
         ).content.strip()
 
+        # Ensure the user-selected style preset is always included.
+        if image_style_preset:
+            merged = f"{image_style_preset}, {image_prompt}" if image_prompt else image_style_preset
+            image_prompt = merged
+
         # Final clamp: keep it one line, short.
         image_prompt = " ".join(image_prompt.split())
-        image_prompt = _clamp_line(image_prompt, 220)
+        image_prompt = _clamp_line(image_prompt, 260)
         print("DEBUG Generated image prompt:\n", image_prompt)
 
-        # output is a PIL.Image object
-        image = client.text_to_image(
-            image_prompt,
-            model="black-forest-labs/FLUX.1-schnell",
-        )
+        def _ensure_png_bytes(raw: bytes) -> bytes:
+            if not raw:
+                return raw
+            try:
+                pil = Image.open(io.BytesIO(raw))
+                buf = io.BytesIO()
+                try:
+                    pil.convert("RGB").save(buf, format="PNG", optimize=True)
+                except Exception:
+                    pil.save(buf, format="PNG")
+                return buf.getvalue()
+            except Exception:
+                return raw
 
-        # IMPORTANT: Do NOT store a PIL Image in LangGraph state.
-        # MemorySaver checkpoints serialize state via msgpack and PIL objects are not serializable.
-        buf = io.BytesIO()
-        try:
-            image.convert("RGB").save(buf, format="PNG", optimize=True)
-        except Exception:
-            image.save(buf, format="PNG")
-        image_bytes = buf.getvalue()
+        def _pollinations_text_to_image_bytes(prompt_text: str) -> bytes:
+            api_key = (os.environ.get("POLLINATIONS_API_KEY") or "").strip()
+            base = "https://gen.pollinations.ai/image/"
+            encoded_prompt = urllib.parse.quote((prompt_text or "").strip(), safe="")
+            params: dict[str, str] = {
+                "model": "turbo",
+                "width": str(int(os.environ.get("POLLINATIONS_WIDTH") or "768")),
+                "height": str(int(os.environ.get("POLLINATIONS_HEIGHT") or "768")),
+                # Keep defaults conservative; can be tuned later.
+                "safe": "true",
+            }
+            headers: dict[str, str] = {
+                "User-Agent": "FableFriend/1.0",
+            }
+            if api_key:
+                if api_key.startswith("sk_"):
+                    headers["Authorization"] = f"Bearer {api_key}"
+                elif api_key.startswith("pk_"):
+                    params["key"] = api_key
+
+            url = base + encoded_prompt + "?" + urllib.parse.urlencode(params)
+            req = urllib.request.Request(url, headers=headers, method="GET")
+            try:
+                with urllib.request.urlopen(req, timeout=60) as resp:
+                    data = resp.read()
+            except urllib.error.HTTPError as e:
+                body = ""
+                try:
+                    body = e.read().decode("utf-8", errors="ignore")
+                except Exception:
+                    pass
+                raise RuntimeError(f"Pollinations HTTP {getattr(e, 'code', '?')}: {body[:300]}")
+            return _ensure_png_bytes(data)
+
+        image_bytes: bytes | None = None
+        hf_error: Exception | None = None
+
+        # Primary: Hugging Face inference
+        if client is None:
+            print("[image_node] HF_TOKEN not set; will try Pollinations fallback")
+        else:
+            try:
+                image = client.text_to_image(
+                    image_prompt,
+                    model="black-forest-labs/FLUX.1-schnell",
+                )
+
+                # IMPORTANT: Do NOT store a PIL Image in LangGraph state.
+                # MemorySaver checkpoints serialize state via msgpack and PIL objects are not serializable.
+                buf = io.BytesIO()
+                try:
+                    image.convert("RGB").save(buf, format="PNG", optimize=True)
+                except Exception:
+                    image.save(buf, format="PNG")
+                image_bytes = buf.getvalue()
+            except Exception as e:
+                hf_error = e
+                print(f"[image_node] HF image generation failed; falling back to Pollinations: {e}")
+
+        # Fallback: Pollinations with the SAME prompt
+        if not image_bytes:
+            try:
+                image_bytes = _pollinations_text_to_image_bytes(image_prompt)
+            except Exception as e:
+                print(f"[image_node] Pollinations fallback failed: {e}")
+                if hf_error:
+                    print(f"[image_node] Original HF error: {hf_error}")
+                return {}
 
         return {
             "last_image": image_bytes,
@@ -707,6 +829,7 @@ initial_state = {
     "theme": "fantasy",
     "char_name": "Unknown Hero",
     "role": "",
+    "image_style": "",
     "world": {"location": "", "time": "", "notes": ""},
     "inventory": [],
     "turn_count": 0,
@@ -856,7 +979,7 @@ def on_rewind_click(history, thread_id):
     return on_user_message(REWIND_KEY, history, thread_id)
 
 
-def initialize_state(char_name, genre, role_id) -> dict:
+def initialize_state(char_name, genre, role_id, image_style: str = "") -> dict:
     print("DEBUG on_begin_story received genre =", genre)
     char_name = (char_name or "Unknown Hero").strip()
     genre = (genre or "fantasy").strip()
@@ -896,6 +1019,7 @@ def initialize_state(char_name, genre, role_id) -> dict:
         "theme": theme,
         "char_name": char_name,
         "role": role_display,
+        "image_style": (image_style or "").strip(),
         "world": {"location": "", "time": "", "notes": ""},
         "inventory": [],
         "turn_count": 0,
@@ -913,21 +1037,21 @@ def initialize_state(char_name, genre, role_id) -> dict:
 
 
 # To make sure button or js does not interfere with genre
-def on_begin_story_checked(char_name, genre, role_id, history, thread_id):
+def on_begin_story_checked(char_name, genre, role_id, image_style, history, thread_id):
     print("on_begin_story received genre ", genre)
     if genre is None:
         raise ValueError("Genre become None - something is not working")
-    return on_begin_story(char_name, genre, role_id, history, thread_id)
+    return on_begin_story(char_name, genre, role_id, image_style, history, thread_id)
 
 
-def on_begin_story(char_name, genre, role_id, history, thread_id):
+def on_begin_story(char_name, genre, role_id, image_style, history, thread_id):
     # standard stuff
     thread_id = _make_thread_id()
     normalized_genre, _role_display = _normalize_genre_for_role(
         genre=(genre or "fantasy"),
         role_id=(role_id or ""),
     )
-    starter = initialize_state(char_name, normalized_genre, role_id)
+    starter = initialize_state(char_name, normalized_genre, role_id, image_style)
     opening, opening_image = run_until_interrupt(app, starter, config={"configurable": {"thread_id": thread_id}})
     history = (history or []) + [{"role": "assistant", "content": opening}]
     try:
