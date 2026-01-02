@@ -22,6 +22,7 @@ The *main loop* is
 *Image* uses another llm to look at state and generate a prompt for the image generator --->                                                                     |
 *User* It's YOU! You can do something, continue, rewind, or go to the menu to start a new story --->                                                             |
 *Judger Improver* To keep you and the other nodes in check - filling the other nodes in with details and making sure you can't get away with anything ------------
+Notes: Two models are used - gptoss-120b and llama-3.1-8b
 
 2. **Gradio** for the frontend by handling all the images, animations, buttons, dropdowns, accordian, chatinterface, displaying and supporting HTML, CSS, and JS.
 It took lots of refinements to get such a robust interface with Gradio which typically supports only one page
@@ -30,3 +31,32 @@ It took lots of refinements to get such a robust interface with Gradio which typ
 
 Python 3.11 and pip install -r requirements.txt
 **The main file to run is app.py**
+
+There are many environment variables but the main ones are:
++ GROQ_API_KEY - your groq cloud api key for the main story creating text llms
++ HF_TOKEN - primary image provider your hugging face token for image generation using FLUX1-schnell
++ POLLINATIONS_API_KEY - secondary image provider (alternative to hugging face) your pollinations api key using turbo (or zimage if you prefer)
+
+## Hugging Face Spaces
+
+The API keys are set in my space's secrets.
+Images are stored in runtime_images and they get cleaned once RUNTIME_IMAGES_MAX_FILES is reached, because there is only so much space available. Currently I have the image max at 50.
+Just type "python app.py" and Fable Friend will get going!
+
+## Structure
+
+There are three main files:
+**app.py**: main execution file that has all the Langchain and Langgraph logic and the app entry point
+**gradio_frontend.py**: file that has all frontend elements with Gradio and includes CSS, HTML and JS parts and uses the UI, seperated from app.py to ensure the backend and frontend stay seperate
+**file_of_prompts.py**: file that is just a list of the longer prompts for the llm to ensure that app.py is not cluttered with lots of long prompts
+
+There is the /frontend folder that has ui elements like the crystal ball animation, a test image, and avatar for Fable Friend, an icon, and a title picture.
+
+## Limitations & Future
+
+Hugging Face offers better image generation but Pollinations.ai is a cheaper option. The image style and general image consistency depends on the model and its adherance to the prompt.
+A bigger llm than gpt-oss-120b could possibly improve the storytelling. In the future, streaming the storyteller's response, a bigger and better image style set would be nice. It would be interesting to see how a more game based system with chapters, additional hp, or combat would work with AI. Maybe one day, users can save their story.
+
+# Credits
+
+Thank you to Gradio, Langchain & Langgraph, models from Groq Cloud, Hugging Face, Pollinations.ai!
