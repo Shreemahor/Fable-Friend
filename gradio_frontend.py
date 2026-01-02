@@ -5,7 +5,7 @@ import html
 
 HEAD = """
 <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;700&family=Fredoka:wght@400;600&family=Lato:wght@300;400&display=swap" rel="stylesheet">
-<script src="https://unpkg.com/@lottiefiles/lottie-player@latest/dist/lottie-player.js"></script>
+<script defer src="https://unpkg.com/@lottiefiles/lottie-player@latest/dist/lottie-player.js"></script>
 
 <script>
   window.addEventListener("DOMContentLoaded", () => {
@@ -44,6 +44,17 @@ CSS = """
 
 .readout-box .readout-value {
   opacity: 0.95;
+}
+
+#crystal-gap, #crystal-gap * {
+  background: transparent !important;
+  border: none !important;
+}
+
+.crystal-gap-inner {
+  width: 100%;
+  height: 260px;
+  background: transparent;
 }
 
 body {
@@ -99,7 +110,7 @@ body {
   inset: 0;
   display: grid;
   place-items: center;
-  z-index: 0;
+  z-index: 9999;
   pointer-events: none;
 
   opacity: 0;
@@ -107,7 +118,7 @@ body {
 }
 
 #crystal-ball-bg {
-  z-index: -10 !important;
+  z-index: 9999 !important;
 }
 
 #crystal-ball-bg, #crystal-ball-bg * {
@@ -138,9 +149,10 @@ body {
   transform: scale(0.85);
 }
 
+/* CRYSTAL BALLL SIZE ADJUSTS MENTS IS HERE*/
 #crystal-ball-bg lottie-player {
-  width: 900px;
-  height: 900px;
+  width: 700px;
+  height: 700px;
   filter: drop-shadow(0 0 30px rgba(91, 139, 255, 0.3));
 }
 
@@ -186,6 +198,11 @@ body {
   align-items: center;
   gap: 24px;
   text-align: center;
+}
+
+#crystal-screen .screen-inner {
+  justify-content: flex-start;
+  padding-top: 24px;
 }
 
 .btn-magic button {
@@ -310,6 +327,71 @@ def build_demo(*, on_user_message, on_begin_story, on_begin_story_checked, on_co
         history_state = gr.State([])
         char_name_state = gr.State("")
         genre_state = gr.State("")
+        image_style_state = gr.State("")
+
+        ROLE_OPTIONS = {
+          "fantasy": [
+            ("Valiant Paladin 🛡️", "valiant_paladin"),
+            ("Elven Ranger 🏹", "elven_ranger"),
+            ("Arcane Scholar 🧙‍♂️", "arcane_scholar"),
+            ("Shadow Thief 🗝️", "shadow_thief"),
+            ("Circle Druid 🌿", "circle_druid"),
+          ],
+          "scifi": [
+            ("Elite Netrunner 🖥️", "elite_netrunner"),
+            ("Street Samurai ⚔️", "street_samurai"),
+            ("Tech Specialist 🔧", "tech_specialist"),
+            ("Social Face 🕶️", "social_face"),
+            ("Heavy Solo 🦾", "heavy_solo"),
+          ],
+          "grimdark": [
+            ("Plague Doctor 🎭", "plague_doctor"),
+            ("Broken Knight ⚔️", "broken_knight"),
+            ("Famine Scavenger 🎒", "famine_scavenger"),
+            ("Penitent Zealot 🕯️", "penitent_zealot"),
+            ("Grave Robber 🔦", "grave_robber"),
+          ],
+          "noir": [
+            ("Hardboiled P.I. 🚬", "hardboiled_pi"),
+            ("Femme Fatale 💋", "femme_fatale"),
+            ("Dirty Cop 🚔", "dirty_cop"),
+            ("Underground Informant 🐀", "underground_informant"),
+            ("Forensic Analyst 🔍", "forensic_analyst"),
+          ],
+          "space_opera": [
+            ("Starship Pilot 🚀", "starship_pilot"),
+            ("Alien Emissary 👽", "alien_emissary"),
+            ("Bounty Hunter 🔫", "bounty_hunter"),
+            ("Naval Officer 🎖️", "naval_officer"),
+            ("Psionic Adept 🔮", "psionic_adept"),
+          ],
+        }
+
+        def _debug_print_genre(g):
+          print(f"[debug] genre={g!r}")
+
+        def _on_genre_change(g):
+          choices = ROLE_OPTIONS.get((g or "").strip(), [])
+          if not choices:
+            return (
+              gr.update(choices=[("Choose your Path first", "__NEED_PATH__")], value=None),
+              gr.update(value=""),
+            )
+          return (
+            gr.update(choices=choices, value=None),
+            gr.update(value=""),
+          )
+
+        def _on_role_change(r, g):
+          if not (g or "").strip() or r == "__NEED_PATH__":
+            return (
+              gr.update(value=None),
+              gr.update(value='<div style="color: #ffffff;">Choose your Path first.</div>'),
+            )
+          return (
+            gr.update(),
+            gr.update(value=""),
+          )
 
 
         title_screen = gr.Group(visible=True, elem_id="title-screen")
@@ -326,23 +408,76 @@ def build_demo(*, on_user_message, on_begin_story, on_begin_story_checked, on_co
 
         crystal_ball_screen = gr.Group(visible=False, elem_id="crystal-screen")
         with crystal_ball_screen:
-            with gr.Group(elem_classes=["screen-inner"]):
-              with gr.Group(elem_id="ball-content", elem_classes=["ball-content"]):
-                  char_name = gr.Textbox(label="What is your name?", placeholder="Enter your character's name...")
-                  genre = gr.Dropdown(
-                      label="Choose your Path",
-                      choices=[
-                          ("High-Fantasy Quest ⚔️🐉", "fantasy"),
-                          ("Cyberpunk Heist 🤖🏙️", "scifi"),
-                          ("Grimdark Survival 💀🏚️", "grimdark"),
-                          ("Noir Detective 🕵️‍♂️🔦", "noir"),
-                          ("Cosmic Space Opera 🌌🛸", "space_opera")
-                      ],
-                      value=None,
+          with gr.Group(elem_classes=["screen-inner"]):
+            begin_btn = gr.Button("Begin Your Story", elem_classes=["btn-magic"])
+            begin_warning = gr.HTML(value="", elem_id="begin-warning")
+
+            with gr.Row(equal_height=True):
+              with gr.Column(scale=4, min_width=360):
+                with gr.Group(elem_id="ball-content", elem_classes=["ball-content"]):
+                  char_name = gr.Textbox(
+                    label="What is your name?",
+                    placeholder="Enter your character's name...",
                   )
-                  debug_genre = gr.Textbox(label="DEBUG genre value", interactive=False)
-                  genre.change(fn=lambda g: g, inputs=genre, outputs=debug_genre, queue=False)
-                  begin_btn = gr.Button("Begin Your Story", elem_classes=["btn-magic"])
+                  genre = gr.Dropdown(
+                    label="Choose your Path",
+                    choices=[
+                      ("High-Fantasy Quest ⚔️🐉", "fantasy"),
+                      ("Cyberpunk Heist 🤖🏙️", "scifi"),
+                      ("Grimdark Survival 💀🏚️", "grimdark"),
+                      ("Noir Detective 🕵️‍♂️🔦", "noir"),
+                      ("Cosmic Space Opera 🌌🛸", "space_opera"),
+                    ],
+                    value=None,
+                    elem_id="genre-dd",
+                  )
+                  genre.change(fn=_debug_print_genre, inputs=genre, outputs=None, queue=False)
+
+              with gr.Column(scale=4, min_width=440):
+                gr.HTML(
+                  value='<div class="crystal-gap-inner"></div>',
+                  elem_id="crystal-gap",
+                )
+
+              with gr.Column(scale=4, min_width=360):
+                with gr.Group(elem_id="role-content", elem_classes=["ball-content"]):
+                  role = gr.Dropdown(
+                    label="Choose your role",
+                    choices=[("Choose your Path first", "__NEED_PATH__")],
+                    value=None,
+                    elem_id="role-dd",
+                  )
+                  role_hint = gr.HTML(value="")
+
+                  image_style = gr.Dropdown(
+                    label="Choose your image style",
+                    choices=[
+                      ("placeholder 1", "placeholder_1"),
+                      ("placeholder 2", "placeholder_2"),
+                      ("placeholder 3", "placeholder_3"),
+                    ],
+                    value=None,
+                    elem_id="image-style-dd",
+                  )
+                  image_style.change(
+                    fn=lambda s: (s or ""),
+                    inputs=image_style,
+                    outputs=image_style_state,
+                    queue=False,
+                  )
+
+                  genre.change(
+                    fn=_on_genre_change,
+                    inputs=genre,
+                    outputs=[role, role_hint],
+                    queue=False,
+                  )
+                  role.change(
+                    fn=_on_role_change,
+                    inputs=[role, genre],
+                    outputs=[role, role_hint],
+                    queue=False,
+                  )
 
 
         chat_screen = gr.Group(visible=False, elem_id="chat-screen")
@@ -514,6 +649,16 @@ def build_demo(*, on_user_message, on_begin_story, on_begin_story_checked, on_co
             fn=None,
             js="""
               () => {
+              const warn = document.getElementById("begin-warning");
+              const genreRoot = document.getElementById("genre-dd");
+              const roleRoot = document.getElementById("role-dd");
+              const genreVal = (genreRoot?.querySelector("input") || genreRoot?.querySelector("select"))?.value;
+              const roleVal = (roleRoot?.querySelector("input") || roleRoot?.querySelector("select"))?.value;
+              if (!genreVal || !roleVal) {
+                if (warn) warn.innerHTML = `<div style="color: #ffffff; font-weight: 700;">Finish your adventure's details!</div>`;
+                return;
+              }
+
               const bg = document.getElementById("crystal-ball-bg");
               const content = document.getElementById("ball-content");
               const player = document.getElementById("ball-lottie");
@@ -542,31 +687,46 @@ def build_demo(*, on_user_message, on_begin_story, on_begin_story_checked, on_co
               """
         )
 
-        def _begin_story_click(n, g, h, t):
-            out = on_begin_story_checked(n, g, h, t)
-            new_history = out[0]
-            new_thread_id = out[1]
-            new_char_name = out[2]
-            new_genre = out[3]
-            pending = out[4]
-            deadline = out[5]
-            display_char_name = (new_char_name or "").strip() or "Unknown Hero"
+        def _begin_story_click(n, g, r, h, t):
+          if not (g or "").strip() or not (r or "").strip() or r == "__NEED_PATH__":
             return (
-                new_history,
-                new_thread_id,
-                new_char_name,
-                new_genre,
-                pending,
-                deadline,
-                new_history,
-                _render_readout("Character", display_char_name),
-                _render_readout("Genre", new_genre),
+              h,
+              t,
+              n,
+              g,
+              False,
+              0.0,
+              h,
+              gr.update(),
+              gr.update(),
+              '<div style="color: #ffffff; font-weight: 700;">Finish your adventure\'s details!</div>',
             )
+
+          out = on_begin_story_checked(n, g, h, t)
+          new_history = out[0]
+          new_thread_id = out[1]
+          new_char_name = out[2]
+          new_genre = out[3]
+          pending = out[4]
+          deadline = out[5]
+          display_char_name = (new_char_name or "").strip() or "Unknown Hero"
+          return (
+              new_history,
+              new_thread_id,
+              new_char_name,
+              new_genre,
+              pending,
+              deadline,
+              new_history,
+              _render_readout("Character", display_char_name),
+              _render_readout("Genre", new_genre),
+          "",
+          )
 
         begin_btn.click(
             fn=_begin_story_click,
-            inputs=[char_name, genre, history_state, thread_id_state],
-            outputs=[history_state, thread_id_state, char_name_state, genre_state, transition_pending, transition_deadline, chatbot, char_readout, genre_readout],
+          inputs=[char_name, genre, role, history_state, thread_id_state],
+          outputs=[history_state, thread_id_state, char_name_state, genre_state, transition_pending, transition_deadline, chatbot, char_readout, genre_readout, begin_warning],
         )
 
     return demo
