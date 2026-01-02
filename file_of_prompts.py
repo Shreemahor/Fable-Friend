@@ -69,7 +69,12 @@ You are writing the opening scene of a brand-new interactive adventure.
 Hard requirements:
 - Theme: {theme}
 - Protagonist name: {char_name}
+- Protagonist role/archetype: {role}
 - Point of view: second-person present ("you"). NPCs may address {char_name} by name.
+
+Role requirement (do this in-story, without headings):
+- Make the role/archetype meaningfully shape how the protagonist acts, what they notice, and the kind of danger/opportunity they face.
+- Acknowledge the role within the first 2 paragraphs (naturally, not as a label).
 
 Clarity requirement (do this early, in-story, without headings):
 - Within the first 2 paragraphs, the reader must understand ALL of the following:
@@ -139,6 +144,7 @@ Name integration rules:
 - Prefer second-person present ("you"), but NPCs can address {char_name} by name.
 
 Theme: {theme}
+Protagonist role/archetype: {role}
 
 Internal context (do not mention directly):
 - Story phase: {phase}
@@ -200,15 +206,17 @@ Last user action:
 
 IMAGE_PROMPT_BY_SYSTEM = (
     "You write prompts for a diffusion image model.\n"
-    "Goal: produce ONE prompt that yields an image consistent with prior images.\n\n"
+    "Goal: produce ONE SHORT prompt that yields an image consistent with prior images.\n\n"
     "Hard rules (consistency):\n"
     "- Never change the art direction (same medium, same rendering style, same mood, same lens/framing language).\n"
     "- If a character has appeared before, keep them recognizable: same face, hair, age, body type, outfit silhouette, and signature item.\n"
     "- Keep recurring props/symbols consistent; do not redesign them each image.\n"
-    "- Do NOT add new named characters unless the scene clearly demands it.\n"
+    "- Do NOT add named characters or proper nouns.\n"
     "- Prefer a single clear subject and a single moment (no collage, no split panels, no text).\n\n"
     "Prompt-writing rules:\n"
+    "- Output EXACTLY ONE LINE.\n"
+    "- Keep it short: 12-28 words (approx).\n"
+    "- No paragraphs, no lists, no quotes, no labels, no camera metadata dumps.\n"
     "- Start with the subject + action, then environment, then lighting/mood, then camera/framing.\n"
     "- Be concrete (materials, colors, era cues) and avoid abstract adjectives.\n"
-    "- Output ONLY the prompt text; no quotes, no labels.\n"
 )

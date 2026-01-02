@@ -702,7 +702,7 @@ def build_demo(*, on_user_message, on_begin_story, on_begin_story_checked, on_co
               '<div style="color: #ffffff; font-weight: 700;">Finish your adventure\'s details!</div>',
             )
 
-          out = on_begin_story_checked(n, g, h, t)
+          out = on_begin_story_checked(n, g, r, h, t)
           new_history = out[0]
           new_thread_id = out[1]
           new_char_name = out[2]

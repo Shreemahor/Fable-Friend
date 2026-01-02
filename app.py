@@ -34,6 +34,87 @@ THREAD_META: Dict[str, Dict[str, Any]] = {}
 GRACE_PERIOD_INVISIBLE_TELLER = "grace_period:"
 
 
+# Role/genre safety:
+# If the user somehow bypasses the UI and sends a role that doesn't belong to the chosen genre,
+# we snap the genre to the role's parent genre.
+ROLE_TO_GENRE: Dict[str, str] = {
+    # fantasy
+    "valiant_paladin": "fantasy",
+    "elven_ranger": "fantasy",
+    "arcane_scholar": "fantasy",
+    "shadow_thief": "fantasy",
+    "circle_druid": "fantasy",
+    # scifi
+    "elite_netrunner": "scifi",
+    "street_samurai": "scifi",
+    "tech_specialist": "scifi",
+    "social_face": "scifi",
+    "heavy_solo": "scifi",
+    # grimdark
+    "plague_doctor": "grimdark",
+    "broken_knight": "grimdark",
+    "famine_scavenger": "grimdark",
+    "penitent_zealot": "grimdark",
+    "grave_robber": "grimdark",
+    # noir
+    "hardboiled_pi": "noir",
+    "femme_fatale": "noir",
+    "dirty_cop": "noir",
+    "underground_informant": "noir",
+    "forensic_analyst": "noir",
+    # space_opera
+    "starship_pilot": "space_opera",
+    "alien_emissary": "space_opera",
+    "bounty_hunter": "space_opera",
+    "naval_officer": "space_opera",
+    "psionic_adept": "space_opera",
+}
+
+ROLE_DISPLAY: Dict[str, str] = {
+    "valiant_paladin": "Valiant Paladin",
+    "elven_ranger": "Elven Ranger",
+    "arcane_scholar": "Arcane Scholar",
+    "shadow_thief": "Shadow Thief",
+    "circle_druid": "Circle Druid",
+    "elite_netrunner": "Elite Netrunner",
+    "street_samurai": "Street Samurai",
+    "tech_specialist": "Tech Specialist",
+    "social_face": "Social Face",
+    "heavy_solo": "Heavy Solo",
+    "plague_doctor": "Plague Doctor",
+    "broken_knight": "Broken Knight",
+    "famine_scavenger": "Famine Scavenger",
+    "penitent_zealot": "Penitent Zealot",
+    "grave_robber": "Grave Robber",
+    "hardboiled_pi": "Hardboiled P.I.",
+    "femme_fatale": "Femme Fatale",
+    "dirty_cop": "Dirty Cop",
+    "underground_informant": "Underground Informant",
+    "forensic_analyst": "Forensic Analyst",
+    "starship_pilot": "Starship Pilot",
+    "alien_emissary": "Alien Emissary",
+    "bounty_hunter": "Bounty Hunter",
+    "naval_officer": "Naval Officer",
+    "psionic_adept": "Psionic Adept",
+}
+
+
+def _normalize_genre_for_role(*, genre: str, role_id: str) -> tuple[str, str]:
+    """Return (genre, role_display) after validating role_id belongs to genre.
+
+    If role_id maps to a different genre, snap genre to that genre.
+    """
+    genre = (genre or "").strip()
+    role_id = (role_id or "").strip()
+
+    role_display = (ROLE_DISPLAY.get(role_id) or role_id or "Adventurer").strip()
+    mapped_genre = ROLE_TO_GENRE.get(role_id)
+    if mapped_genre and mapped_genre != genre:
+        print(f"[begin_story] role {role_id!r} belongs to {mapped_genre!r}; overriding genre {genre!r}")
+        genre = mapped_genre
+    return genre, role_display
+
+
 def _ui_test_image_path() -> str | None:
     """Return a local image path to show in-chat for UI testing, if present."""
     candidates = [
@@ -51,6 +132,34 @@ def _ui_test_image_path() -> str | None:
 
 def _append_ui_test_image_message(history: list[dict]) -> None:
     path = _ui_test_image_path()
+    if not path:
+        return
+    history.append({"role": "assistant", "content": {"path": path}})
+
+
+def _persist_chat_image_bytes(*, image_bytes: bytes, thread_id: str) -> str | None:
+    """Persist PNG bytes under frontend/ so Gradio can serve it; return relative file path."""
+    if not image_bytes:
+        return None
+    try:
+        os.makedirs(os.path.join("frontend", "runtime_images"), exist_ok=True)
+        stamp = int(time.time() * 1000)
+        safe_thread = (thread_id or "thread").replace("/", "_").replace("\\", "_")
+        filename = f"{safe_thread}_{stamp}.png"
+        rel_path = os.path.join("frontend", "runtime_images", filename)
+        with open(rel_path, "wb") as f:
+            f.write(image_bytes)
+        return rel_path
+    except Exception as e:
+        print(f"[chat_image] failed to persist image: {e}")
+        return None
+
+
+def _append_real_image_message(history: list[dict], *, image_bytes: Any, thread_id: str) -> None:
+    """Append a real generated image to chat history."""
+    if not isinstance(image_bytes, (bytes, bytearray)):
+        return
+    path = _persist_chat_image_bytes(image_bytes=bytes(image_bytes), thread_id=thread_id)
     if not path:
         return
     history.append({"role": "assistant", "content": {"path": path}})
@@ -122,7 +231,8 @@ def _replay_thread(*, starter: dict, inputs: List[str]) -> tuple[list, str, Any,
     history: list[dict] = []
     opening, opening_image = run_until_interrupt(app, starter, config=cfg)
     history.append({"role": "assistant", "content": opening})
-    _append_ui_test_image_message(history)
+    if opening_image is not None:
+        _append_real_image_message(history, image_bytes=opening_image, thread_id=new_thread_id)
     last_image = opening_image
     images: list[Any] = []
     if opening_image is not None:
@@ -139,7 +249,8 @@ def _replay_thread(*, starter: dict, inputs: List[str]) -> tuple[list, str, Any,
                 {"role": "assistant", "content": next_scene},
             ]
         )
-        _append_ui_test_image_message(history)
+        if new_image is not None:
+            _append_real_image_message(history, image_bytes=new_image, thread_id=new_thread_id)
 
     return history, new_thread_id, last_image, images
 
@@ -171,6 +282,7 @@ class Story(TypedDict):
     your_action: Annotated[List[str], list_add]
     theme: str
     char_name: str
+    role: str
 
     world: Dict[str, Any]
     inventory: List[str]
@@ -222,6 +334,7 @@ def storyteller(state: Story):
         state["story_summary"] = what_happened.invoke({"storyline": summarizer_input})
 
     char_name = (state["char_name"] or "Unknown Hero").strip()
+    role = (state.get("role") or "Adventurer").strip()
 
     last_action = (state.get("last_action") or "").strip()
     last_action_raw = (state.get("last_action_raw") or "").strip()
@@ -246,6 +359,7 @@ def storyteller(state: Story):
         length_rule=length_rule,
         char_name=char_name,
         theme=state["theme"],
+        role=role,
         phase=phase,
         should_ask_question=should_ask_question,
         allow_new_proper_noun=allow_new_proper_noun,
@@ -435,48 +549,91 @@ def get_image(state: Story):
     # (turn_count is incremented in storyteller, so intro is typically turn==1.)
     should_generate_image = bool(state.get("is_key_event")) or ((turn % 3) == 1)
 
-    if should_generate_image and False:  # temporarily disable image generation
+    if should_generate_image:
         scene_text = ""
         try:
             scene_text = str(state.get("situation")[-1].content)
         except Exception:  # if something goes wrong
             scene_text = ""
 
+        last_action = str(state.get("last_action") or "").strip()
+        last_action_raw = str(state.get("last_action_raw") or "").strip()
+        if last_action_raw.startswith(GRACE_PERIOD_INVISIBLE_TELLER):
+            last_action_raw = last_action_raw[len(GRACE_PERIOD_INVISIBLE_TELLER):].lstrip()
+
         img_generation_rules = (state.get("img_generation_rules") or "").strip()
         last_image_prompt = (state.get("last_image_prompt") or "").strip()
         theme = (state.get("theme") or "fantasy").strip()
         char_name = (state.get("char_name") or "Unknown Hero").strip()
+        role = (state.get("role") or "Adventurer").strip()
+
+        def _clamp_line(s: str, max_len: int) -> str:
+            s = " ".join((s or "").split())
+            if len(s) <= max_len:
+                return s
+            return (s[: max_len - 1].rstrip() + "…")
+
+        def _clamp_rules(text: str) -> str:
+            lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
+            lines = lines[:3]
+            return "\n".join(_clamp_line(ln, 140) for ln in lines)
 
         # this runs only once to establish the image generation guidelines for the rest of the story
         if not img_generation_rules:
             rule_prompt = (
-                "You are creating a compact visual bible for a story-to-image generator.\n"
-                "Return ONLY plain text (no JSON), 6-10 lines max.\n\n"
-                "Include:\n"
-                "1) A fixed art direction line (medium, framing, lighting, mood) that should NEVER change across images.\n"
-                "2) The protagonist's stable appearance description (face/hair/age, clothing silhouette, signature item).\n"
-                "3) 2-4 stable motifs/props that can recur.\n"
-                "Avoid introducing new proper nouns unless already present.\n\n"
+                "You create a tiny, stable visual tagset for diffusion prompting.\n"
+                "Output EXACTLY 3 lines, no extra text, no names, no ages, no proper nouns:\n"
+                "STYLE: <8-12 words describing a consistent visual style>\n"
+                "HERO: <3-6 words describing the protagonist silhouette/gear archetype>\n"
+                "MOTIFS: <3-6 short nouns, comma-separated>\n\n"
+                "Rules:\n"
+                "- Do NOT write paragraphs.\n"
+                "- Do NOT mention the protagonist's name.\n"
+                "- Keep it generic and drawable by small models.\n\n"
                 f"Theme: {theme}\n"
-                f"Protagonist name: {char_name}\n\n"
-                "Foundational intro:\n"
-                f"{(state.get('intro_text') or '').strip()}"
+                f"Role: {role}\n"
+                "Intro (for vibe only; do not copy names/phrases):\n"
+                f"{_clamp_line((state.get('intro_text') or '').strip(), 500)}"
             )
             img_generation_rules = llm2.invoke([SystemMessage(content=rule_prompt)]).content
 
+        img_generation_rules = _clamp_rules(img_generation_rules)
+
         print("DEBUG Image generation rules:\n", img_generation_rules)
-        # this runs every time a image is needed to generate the prompt
-        # IMAGE_PROMPT_BY_SYSTEM basically says "You are a image prompt engineer"
-        # image_prompt_human basically says "Here are the rules and specifics"
+
+        # Create a SHORT prompt that focuses on the visible action/scene (not lore, not names).
+        # Include the player's action so images actually change with input.
+        action_hint = ""
+        if last_action and last_action != CONTINUE_KEY:
+            action_hint = last_action
+        elif last_action_raw and last_action_raw != CONTINUE_KEY:
+            action_hint = last_action_raw
+
         image_prompt_human = (
-            f"VISUAL BIBLE (must stay consistent):\n{img_generation_rules}\n\n"
-            + (f"PREVIOUS IMAGE PROMPT (keep continuity):\n{last_image_prompt}\n\n" if last_image_prompt else "")
-            + f"SCENE TO DEPICT:\n{scene_text}\n\n"
-            + "Write the diffusion prompt now."
+            "Goal: output ONE short diffusion prompt (single line).\n"
+            "Hard limits:\n"
+            "- 12 to 28 words total\n"
+            "- NO proper nouns, NO character names, NO ages, NO long backstory\n"
+            "- Prefer depicting the main action + environment + 1-2 key objects\n"
+            "- If possible, avoid close-up portraits; show the scene/vehicles/action\n"
+            "- If the player's action suggests an action shot, reflect it\n\n"
+            f"STYLE TAGS:\n{img_generation_rules}\n\n"
+            + (f"PREV PROMPT (for continuity only):\n{_clamp_line(last_image_prompt, 180)}\n\n" if last_image_prompt else "")
+            + (f"PLAYER ACTION (important):\n{_clamp_line(action_hint, 180)}\n\n" if action_hint else "")
+            + f"SCENE TEXT (may be verbose; extract gist):\n{_clamp_line(scene_text, 600)}\n\n"
+            "Examples of acceptable outputs:\n"
+            "- massive starship dragged into a vortex, small fighter attacking drones, neon space debris, cinematic wide shot\n"
+            "- rain-soaked alley stakeout, detective silhouette under streetlamp, distant sirens, gritty noir lighting\n"
+            "Now output ONLY the prompt line."
         )
+
         image_prompt = llm2.invoke(
             [SystemMessage(content=IMAGE_PROMPT_BY_SYSTEM), HumanMessage(content=image_prompt_human)]
         ).content.strip()
+
+        # Final clamp: keep it one line, short.
+        image_prompt = " ".join(image_prompt.split())
+        image_prompt = _clamp_line(image_prompt, 220)
         print("DEBUG Generated image prompt:\n", image_prompt)
 
         # output is a PIL.Image object
@@ -549,6 +706,7 @@ initial_state = {
     "your_action": [],
     "theme": "fantasy",
     "char_name": "Unknown Hero",
+    "role": "",
     "world": {"location": "", "time": "", "notes": ""},
     "inventory": [],
     "turn_count": 0,
@@ -683,7 +841,8 @@ def on_user_message(user_message, history, thread_id):
 
     history = (history or []) + [{"role": "user", "content": msg}, {"role": "assistant", "content": next_scene}]
     try:
-        _append_ui_test_image_message(history)
+        if new_image is not None:
+            _append_real_image_message(history, image_bytes=new_image, thread_id=thread_id)
     except Exception:
         pass
     return "", history, thread_id, gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), _image_payloads_to_pil_list(images_to_show)
@@ -697,10 +856,13 @@ def on_rewind_click(history, thread_id):
     return on_user_message(REWIND_KEY, history, thread_id)
 
 
-def initialize_state(char_name, genre) -> dict:
+def initialize_state(char_name, genre, role_id) -> dict:
     print("DEBUG on_begin_story received genre =", genre)
     char_name = (char_name or "Unknown Hero").strip()
     genre = (genre or "fantasy").strip()
+    role_id = (role_id or "").strip()
+
+    genre, role_display = _normalize_genre_for_role(genre=genre, role_id=role_id)
     print("genre is ", genre)
     genres_map = {
         "fantasy": "High-Fantasy Quest (epic adventure, magic, ancient ruins, heroic tone)",
@@ -716,7 +878,7 @@ def initialize_state(char_name, genre) -> dict:
     # )
     print("theme is ", theme)
 
-    intro_prompt = INTRO_PROMPT_TEMPLATE.format(theme=theme, char_name=char_name)
+    intro_prompt = INTRO_PROMPT_TEMPLATE.format(theme=theme, char_name=char_name, role=role_display)
 
 
 
@@ -733,6 +895,7 @@ def initialize_state(char_name, genre) -> dict:
         "your_action": [],
         "theme": theme,
         "char_name": char_name,
+        "role": role_display,
         "world": {"location": "", "time": "", "notes": ""},
         "inventory": [],
         "turn_count": 0,
@@ -750,21 +913,26 @@ def initialize_state(char_name, genre) -> dict:
 
 
 # To make sure button or js does not interfere with genre
-def on_begin_story_checked(char_name, genre, history, thread_id):
+def on_begin_story_checked(char_name, genre, role_id, history, thread_id):
     print("on_begin_story received genre ", genre)
     if genre is None:
         raise ValueError("Genre become None - something is not working")
-    return on_begin_story(char_name, genre, history, thread_id)
+    return on_begin_story(char_name, genre, role_id, history, thread_id)
 
 
-def on_begin_story(char_name, genre, history, thread_id):
+def on_begin_story(char_name, genre, role_id, history, thread_id):
     # standard stuff
     thread_id = _make_thread_id()
-    starter = initialize_state(char_name, genre)
+    normalized_genre, _role_display = _normalize_genre_for_role(
+        genre=(genre or "fantasy"),
+        role_id=(role_id or ""),
+    )
+    starter = initialize_state(char_name, normalized_genre, role_id)
     opening, opening_image = run_until_interrupt(app, starter, config={"configurable": {"thread_id": thread_id}})
     history = (history or []) + [{"role": "assistant", "content": opening}]
     try:
-        _append_ui_test_image_message(history)
+        if opening_image is not None:
+            _append_real_image_message(history, image_bytes=opening_image, thread_id=thread_id)
     except Exception:
         pass
 
@@ -778,7 +946,7 @@ def on_begin_story(char_name, genre, history, thread_id):
         history,
         thread_id,
         char_name,
-        genre,
+        normalized_genre,
         True,
         time.time() + 0.5,  # animation timing
         _image_payloads_to_pil_list(images),
@@ -816,7 +984,8 @@ def continue_story(history, thread_id):
         history.append({"role": "assistant", "content": next_scene})
 
     try:
-        _append_ui_test_image_message(history)
+        if new_image is not None:
+            _append_real_image_message(history, image_bytes=new_image, thread_id=thread_id)
     except Exception:
         pass
 
