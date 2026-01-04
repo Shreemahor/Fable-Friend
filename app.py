@@ -302,6 +302,44 @@ def _replay_thread(*, starter: dict, inputs: List[str]) -> tuple[list, str, Any,
     return history, new_thread_id, last_image, images
 
 
+def _get_latest_interrupt_configs(thread_id: str) -> list[Any]:
+    """Return interrupt snapshots (newest first) for a given thread_id."""
+    try:
+        cfg = {"configurable": {"thread_id": thread_id}}
+        snapshots = list(app.get_state_history(cfg))
+        interrupts = [s for s in snapshots if getattr(s, "interrupts", None)]
+        interrupts.sort(key=lambda s: int(getattr(s, "index", 0)), reverse=True)
+        return interrupts
+    except Exception as e:
+        print(f"[rewind] failed to read state history: {e}")
+        return []
+
+
+def _revert_history_by_record(history: list[dict], record: dict) -> list[dict]:
+    history = list(history or [])
+    rtype = record.get("type")
+
+    if rtype == "user":
+        before_len = int(record.get("history_len_before") or 0)
+        if before_len < 0:
+            before_len = 0
+        return history[:before_len]
+
+    if rtype == "continue":
+        idx = record.get("assistant_text_index")
+        prior_text = record.get("assistant_text_before")
+        if isinstance(idx, int) and 0 <= idx < len(history) and isinstance(history[idx], dict):
+            history[idx]["content"] = prior_text
+        # Remove any appended image message.
+        if record.get("image_added"):
+            # Usually the image is the last message.
+            if history and isinstance(history[-1], dict) and isinstance(history[-1].get("content"), dict) and "path" in history[-1].get("content", {}):
+                history.pop()
+        return history
+
+    return history
+
+
 def _safe_parse_json_object(text: str) -> Dict[str, Any]:
     if not text:
         return {}
@@ -594,7 +632,7 @@ def get_image(state: Story):
     # (turn_count is incremented in storyteller, so intro is typically turn==1.)
     should_generate_image = bool(state.get("is_key_event")) or ((turn % 3) == 1)
 
-    if should_generate_image and False:
+    if should_generate_image:
         scene_text = ""
         try:
             scene_text = str(state.get("situation")[-1].content)
@@ -685,7 +723,7 @@ def get_image(state: Story):
             merged = f"{image_style_preset}, {image_prompt}" if image_prompt else image_style_preset
             image_prompt = merged
 
-        # Final clamp: keep it one line, short.
+        # Final clamp tightening check: keep it one line, short.
         image_prompt = " ".join(image_prompt.split())
         image_prompt = _clamp_line(image_prompt, 260)
         print("DEBUG Generated image prompt:\n", image_prompt)
@@ -744,7 +782,7 @@ def get_image(state: Story):
         # Primary: Hugging Face inference
         if client is None:
             print("[image_node] HF_TOKEN not set; will try Pollinations fallback")
-        else:
+        elif False:  # Disable HF for now due to cost
             try:
                 image = client.text_to_image(
                     image_prompt,
@@ -764,7 +802,7 @@ def get_image(state: Story):
                 print(f"[image_node] HF image generation failed; falling back to Pollinations: {e}")
 
         # Fallback: Pollinations with the SAME prompt
-        if not image_bytes:
+        if not image_bytes or True:
             try:
                 image_bytes = _pollinations_text_to_image_bytes(image_prompt)
             except Exception as e:
@@ -878,7 +916,7 @@ def on_user_message(user_message, history, thread_id):
     msg = (user_message or "").strip()
     if not msg:
         meta = THREAD_META.get(thread_id or "") or {}
-        return "", history, thread_id, gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), _image_payloads_to_pil_list(meta.get("images") or [])
+        return "", history, thread_id, gr.update(), gr.update(), gr.update()
 
     # MENU: return to crystal selection (clears current thread).
     if msg.lower() == "start" or msg == MENU_KEY or msg == "___MENU__":
@@ -891,41 +929,43 @@ def on_user_message(user_message, history, thread_id):
             gr.update(visible=False),
             gr.update(visible=True),
             gr.update(visible=False),
-            False,
-            0.0,
-            [],
         )
 
     # REWIND: drop the last user+assistant pair by replaying prior inputs.
     if msg == REWIND_KEY:
-        was_game_over = False
-        if history and isinstance(history, list):
-            try:
-                last = history[-1]
-                if isinstance(last, dict) and ("GAME OVER" in str(last.get("content") or "")):
-                    was_game_over = True
-            except Exception:
-                was_game_over = False
-
-        meta = THREAD_META.get(thread_id or "")
+        meta = THREAD_META.get(thread_id or "") or {}
         if not meta:
-            return "", history, thread_id, gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
-        inputs = list(meta.get("inputs") or [])
-        if not inputs:
-            return "", history, thread_id, gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
+            return "", history, thread_id, gr.update(), gr.update(), gr.update()
 
-        inputs.pop()  # remove last input
-        starter = meta.get("starter") or {}
-        new_history, new_thread_id, last_image, images = _replay_thread(starter=starter, inputs=inputs)
-        THREAD_META.pop(thread_id, None)
-        THREAD_META[new_thread_id] = {
-            "starter": starter,
-            "inputs": inputs,
-            "grace_next": was_game_over,
-            "last_image": last_image,
-            "images": images,
-        }
-        return "", new_history, new_thread_id, gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), _image_payloads_to_pil_list(images)
+        records = list(meta.get("turn_records") or [])
+        if not records:
+            return "", history, thread_id, gr.update(), gr.update(), gr.update()
+
+        # Restore previous LangGraph interrupt checkpoint (prevents re-generation).
+        interrupts = _get_latest_interrupt_configs(thread_id)
+        if len(interrupts) >= 2:
+            # Move to the previous interrupt.
+            meta["cfg"] = interrupts[1].config
+
+        record = records.pop()
+        meta["turn_records"] = records
+
+        # Keep meta inputs/images consistent.
+        inputs = list(meta.get("inputs") or [])
+        if inputs:
+            inputs.pop()
+        meta["inputs"] = inputs
+
+        if record.get("image_added") and (meta.get("images") or []):
+            try:
+                meta["images"].pop()
+            except Exception:
+                pass
+        meta["last_image"] = (meta.get("images") or [None])[-1] if meta.get("images") else None
+
+        new_history = _revert_history_by_record(history, record)
+        THREAD_META[thread_id] = meta
+        return "", new_history, thread_id, gr.update(), gr.update(), gr.update()
 
     meta = THREAD_META.get(thread_id or "")
     if not meta:
@@ -937,9 +977,6 @@ def on_user_message(user_message, history, thread_id):
             gr.update(visible=False),
             gr.update(visible=True),
             gr.update(visible=False),
-            False,
-            0.0,
-            None,
         )
 
     meta.setdefault("inputs", []).append(msg)
@@ -949,26 +986,32 @@ def on_user_message(user_message, history, thread_id):
         meta["grace_next"] = False
         msg_for_graph = GRACE_PERIOD_INVISIBLE_TELLER + msg
 
-    next_scene, new_image = run_until_interrupt(
-        app,
-        Command(resume=msg_for_graph),
-        config={"configurable": {"thread_id": thread_id}},
-    )
+    # Always run from the pinned checkpoint config if available.
+    cfg = meta.get("cfg") or {"configurable": {"thread_id": thread_id}}
+    next_scene, new_image = run_until_interrupt(app, Command(resume=msg_for_graph), config=cfg)
     if next_scene == "Nothing for now":
         next_scene = "The story has ended. Type __REWIND__ to rewind, or __MENU__ to return to the menu."
 
     if new_image is not None:
         meta["last_image"] = new_image
         meta.setdefault("images", []).append(new_image)
-    images_to_show = meta.get("images") or []
 
-    history = (history or []) + [{"role": "user", "content": msg}, {"role": "assistant", "content": next_scene}]
+    history = list(history or [])
+    record = {"type": "user", "history_len_before": len(history), "image_added": bool(new_image is not None)}
+    history = history + [{"role": "user", "content": msg}, {"role": "assistant", "content": next_scene}]
     try:
         if new_image is not None:
             _append_real_image_message(history, image_bytes=new_image, thread_id=thread_id)
     except Exception:
         pass
-    return "", history, thread_id, gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), _image_payloads_to_pil_list(images_to_show)
+
+    meta.setdefault("turn_records", []).append(record)
+    # Pin the current interrupt checkpoint config for reliable rewinds.
+    try:
+        meta["cfg"] = app.get_state({"configurable": {"thread_id": thread_id}}).config
+    except Exception:
+        pass
+    return "", history, thread_id, gr.update(), gr.update(), gr.update()
 
 
 def on_menu_click(history, thread_id):
@@ -1039,8 +1082,14 @@ def initialize_state(char_name, genre, role_id, image_style: str = "") -> dict:
 # To make sure button or js does not interfere with genre
 def on_begin_story_checked(char_name, genre, role_id, image_style, history, thread_id):
     print("on_begin_story received genre ", genre)
+    # Never hard-fail here: a malicious/buggy client can send None or mismatched
+    # values and we should recover gracefully rather than crashing the app.
     if genre is None:
-        raise ValueError("Genre become None - something is not working")
+        genre = "fantasy"
+    if role_id is None:
+        role_id = ""
+    if image_style is None:
+        image_style = ""
     return on_begin_story(char_name, genre, role_id, image_style, history, thread_id)
 
 
@@ -1063,7 +1112,18 @@ def on_begin_story(char_name, genre, role_id, image_style, history, thread_id):
     images: list[Any] = []
     if opening_image is not None:
         images.append(opening_image)
-    THREAD_META[thread_id] = {"starter": starter, "inputs": [], "last_image": opening_image, "images": images}
+    meta: Dict[str, Any] = {
+        "starter": starter,
+        "inputs": [],
+        "last_image": opening_image,
+        "images": images,
+        "turn_records": [],
+    }
+    try:
+        meta["cfg"] = app.get_state({"configurable": {"thread_id": thread_id}}).config
+    except Exception:
+        pass
+    THREAD_META[thread_id] = meta
 
     # return for gradio
     return (
@@ -1071,25 +1131,19 @@ def on_begin_story(char_name, genre, role_id, image_style, history, thread_id):
         thread_id,
         char_name,
         normalized_genre,
-        True,
-        time.time() + 0.7,  # animation timing
-        _image_payloads_to_pil_list(images),
     )
 
 def continue_story(history, thread_id):
     if not thread_id:
-        return history, thread_id, None
+        return history, thread_id
 
     meta = THREAD_META.get(thread_id)
     if meta is None:
-        return history, thread_id, None
+        return history, thread_id
     meta.setdefault("inputs", []).append(CONTINUE_KEY)
     
-    next_scene, new_image = run_until_interrupt(
-        app,
-        Command(resume=CONTINUE_KEY),
-        config={"configurable": {"thread_id": thread_id}}
-    )
+    cfg = meta.get("cfg") or {"configurable": {"thread_id": thread_id}}
+    next_scene, new_image = run_until_interrupt(app, Command(resume=CONTINUE_KEY), config=cfg)
 
     if next_scene == "Nothing for now":
         next_scene = "The story has ended. Type __REWIND__ to rewind, or __MENU__ to return to the menu."
@@ -1101,6 +1155,12 @@ def continue_story(history, thread_id):
     # Continue should NOT add a synthetic user message; append to the last assistant *text* message.
     history = list(history or [])
     last_text_idx = _find_last_assistant_text_index(history)
+    record = {
+        "type": "continue",
+        "assistant_text_index": last_text_idx,
+        "assistant_text_before": (str(history[last_text_idx].get("content") or "") if last_text_idx is not None else ""),
+        "image_added": bool(new_image is not None),
+    }
     if last_text_idx is not None:
         prior = str(history[last_text_idx].get("content") or "")
         history[last_text_idx]["content"] = (prior + "\n\n" + next_scene).strip() if prior else next_scene
@@ -1113,7 +1173,13 @@ def continue_story(history, thread_id):
     except Exception:
         pass
 
-    return history, thread_id, _image_payloads_to_pil_list(meta.get("images") or [])
+    meta.setdefault("turn_records", []).append(record)
+    try:
+        meta["cfg"] = app.get_state({"configurable": {"thread_id": thread_id}}).config
+    except Exception:
+        pass
+
+    return history, thread_id
 
 
 from gradio_frontend import build_demo, CSS, HEAD
@@ -1133,10 +1199,10 @@ if __name__ == "__main__":
                             text_size=gr.themes.sizes.text_md,
                             radius_size=gr.themes.sizes.radius_md,
                             ).set(
-                            input_background_fill="#36103b",
-                            input_background_fill_dark="#36103b",
-                            panel_background_fill="#36103b",
-                            panel_background_fill_dark="#36103b",
+                            input_background_fill="#663399",
+                            input_background_fill_dark="#663399",
+                            panel_background_fill="#663399",
+                            panel_background_fill_dark="#663399",
                             ),
                         css=CSS,
                         head=HEAD,

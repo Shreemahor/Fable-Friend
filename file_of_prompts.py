@@ -85,8 +85,8 @@ Clarity requirement (do this early, in-story, without headings):
     5) What stands in your way (a tangible obstacle/threat)
 
 Length + structure:
-- Target length: 600-1000 words.
-- 5-7 paragraphs.
+- Target length: 500-600 words.
+- 4-5 paragraphs.
 - Start in medias res (action already underway), but weave in exposition organically (no lore dump).
 - Include at least 5 concrete anchors spread through the scene (place detail, sensory detail, specific object, specific threat, specific constraint).
 - Include at least one short dialogue exchange.

@@ -13,6 +13,59 @@ HEAD = """
     if (!player) return;
     player.addEventListener("ready", () => player.stop());
   });
+
+  // Contextual Cycling (Advanced 2026 UX): rotate textbox placeholder prompts
+  // client-side only (no backend calls).
+  window.addEventListener("DOMContentLoaded", () => {
+    const getRoot = () => {
+      const host = document.querySelector('gradio-app');
+      return host?.shadowRoot || document;
+    };
+
+    const getCharacterName = () => {
+      const root = getRoot();
+      // Try to read the existing Character readout value.
+      const valueEl = root.querySelector('.readout-box .readout-value');
+      const text = (valueEl?.textContent || '').trim();
+      if (!text || text.toLowerCase().includes('unknown')) return '';
+      return text;
+    };
+
+    const getActionInput = () => {
+      const root = getRoot();
+      const box = root.querySelector('#action-box');
+      if (!box) return null;
+      return box.querySelector('textarea,input');
+    };
+
+    const templates = [
+      // Best for Immersion
+      () => 'Describe your move, or click below to let fate decide...',
+      // Best for Collaborative Play
+      () => 'Steer the story or let me take the lead...',
+      // Short & Punchy
+      () => 'Take an action (optional)...',
+      // The "Vibe" Approach
+      () => {
+        const name = getCharacterName() || 'your hero';
+        return `What will ${name} do? Or just click Continue.`;
+      },
+    ];
+
+    let idx = 0;
+    const tick = () => {
+      const el = getActionInput();
+      if (!el) return;
+      // Don't fight the user while typing.
+      if ((el.value || '').trim().length > 0) return;
+      el.setAttribute('placeholder', templates[idx % templates.length]());
+      idx += 1;
+    };
+
+    // Initial + periodic rotation.
+    setTimeout(tick, 250);
+    setInterval(tick, 6500);
+  });
 </script>
 """
 
@@ -151,8 +204,8 @@ body {
 
 /* CRYSTAL BALLL SIZE ADJUSTS MENTS IS HERE*/
 #crystal-ball-bg lottie-player {
-  width: 800px;
-  height: 800px;
+  width: 600px;
+  height: 600px;
   filter: drop-shadow(0 0 30px rgba(91, 139, 255, 0.3));
 }
 
@@ -272,23 +325,12 @@ body {
   max-width: 420px !important;
   width: min(420px, 92vw) !important;
 }
+
+/* Hidden backend trigger (keep rendered so JS can click it) */
+#begin-backend {
+  display: none !important;
+}
 """
-
-def check_finish_animation(is_pending, deadline):
-    if is_pending and time.time() > deadline:
-        return (
-            gr.update(visible=False),  # crystal ball
-            gr.update(visible=True),  # chat
-            False,  # animation pending
-            0.0  # deadline
-        )
-    return (
-        gr.update(),
-        gr.update(),
-        is_pending,
-        deadline
-    )
-
 
 def _render_readout(label, value):
   safe_label = html.escape(label or "")
@@ -305,10 +347,10 @@ def _render_readout(label, value):
 def build_demo(*, on_user_message, on_begin_story, on_begin_story_checked, on_continue_story, on_rewind_story, on_menu_story) -> gr.Blocks:
 
     with gr.Blocks(fill_height=True) as demo:
-        
-        transition_pending = gr.State(False)
-        transition_deadline = gr.State(0.0)
-        transition_timer = gr.Timer(0.1, active=True)
+
+      # IMPORTANT (Spaces 429 hardening): Avoid any periodic backend polling.
+      # We handle the intro animation timing purely in JS and trigger exactly
+      # one backend call to start the story after the animation completes.
 
         gr.HTML("""
         <div id="crystal-ball-bg">
@@ -411,6 +453,8 @@ def build_demo(*, on_user_message, on_begin_story, on_begin_story_checked, on_co
           with gr.Group(elem_classes=["screen-inner"]):
             begin_btn = gr.Button("Begin Your Story", elem_classes=["btn-magic"])
             begin_warning = gr.HTML(value="", elem_id="begin-warning")
+            # Must be rendered (visible=True) so JS can click it; CSS hides it.
+            begin_backend_btn = gr.Button("_begin_backend", visible=True, elem_id="begin-backend")
 
             with gr.Row(equal_height=True):
               with gr.Column(scale=4, min_width=360):
@@ -515,8 +559,9 @@ def build_demo(*, on_user_message, on_begin_story, on_begin_story_checked, on_co
             )
             textbox = gr.Textbox(
                 label="Your action",
-                placeholder="What do you do? Type here...",
+              placeholder="Describe your move, or click below to let fate decide...",
                 show_label=False,
+              elem_id="action-box",
             )
 
             REWIND_KEY = "__REWIND__"
@@ -530,9 +575,6 @@ def build_demo(*, on_user_message, on_begin_story, on_begin_story_checked, on_co
                     title_u,
                     crystal_u,
                     chat_u,
-                    pending,
-                    deadline,
-                    _images,
                 ) = on_user_message(user_message, history, thread_id)
 
                 return (
@@ -543,8 +585,6 @@ def build_demo(*, on_user_message, on_begin_story, on_begin_story_checked, on_co
                     title_u,
                     crystal_u,
                     chat_u,
-                    pending,
-                    deadline,
                 )
 
             def _rewind_click(history, thread_id):
@@ -556,7 +596,7 @@ def build_demo(*, on_user_message, on_begin_story, on_begin_story_checked, on_co
                 return (*out, _render_readout("Character", "Unknown Hero"), _render_readout("Genre", ""))
 
             def _continue_click(history, thread_id):
-                new_history, new_thread_id, _images = on_continue_story(history, thread_id)
+                new_history, new_thread_id = on_continue_story(history, thread_id)
                 return new_history, new_history, new_thread_id
 
             textbox.submit(
@@ -570,13 +610,11 @@ def build_demo(*, on_user_message, on_begin_story, on_begin_story_checked, on_co
                     title_screen,
                     crystal_ball_screen,
                     chat_screen,
-                    transition_pending,
-                    transition_deadline,
                 ],
             )
 
             with gr.Row(equal_height=True):
-                continue_btn = gr.Button("Continue", scale=2, min_width=160)
+                continue_btn = gr.Button("Continue (No Action)", scale=2, min_width=160)
                 rewind_btn = gr.Button("Rewind", scale=1, min_width=140)
                 menu_btn = gr.Button("Menu", scale=1, min_width=120)
 
@@ -597,8 +635,6 @@ def build_demo(*, on_user_message, on_begin_story, on_begin_story_checked, on_co
                     title_screen,
                     crystal_ball_screen,
                     chat_screen,
-                    transition_pending,
-                    transition_deadline,
                 ],
             )
 
@@ -613,19 +649,10 @@ def build_demo(*, on_user_message, on_begin_story, on_begin_story_checked, on_co
                     title_screen,
                     crystal_ball_screen,
                     chat_screen,
-                    transition_pending,
-                    transition_deadline,
                     char_readout,
                     genre_readout,
                 ],
             )
-
-        transition_timer.tick(
-            fn=check_finish_animation,
-            inputs=[transition_pending, transition_deadline],
-            outputs=[crystal_ball_screen, chat_screen, transition_pending, transition_deadline],
-            queue=False
-        )
 
         start_btn.click(
             fn=lambda: (gr.update(visible=False),
@@ -633,7 +660,7 @@ def build_demo(*, on_user_message, on_begin_story, on_begin_story_checked, on_co
                         gr.update(visible=False)),
             inputs=[],
             outputs=[title_screen, crystal_ball_screen, chat_screen],
-            js="""
+            js=""" // This just does not actually activate in reality, but its just here just in case.
             () => {
                 const bg = document.getElementById("crystal-ball-bg");
                 if (bg) {
@@ -649,9 +676,18 @@ def build_demo(*, on_user_message, on_begin_story, on_begin_story_checked, on_co
             fn=None,
             js="""
               () => {
-              const warn = document.getElementById("begin-warning");
-              const genreRoot = document.getElementById("genre-dd");
-              const roleRoot = document.getElementById("role-dd");
+              const gradioHost = document.querySelector('gradio-app');
+              const root = gradioHost?.shadowRoot || document;
+
+              const warn =
+                (root && root.querySelector ? root.querySelector('#begin-warning') : null)
+                || document.querySelector('#begin-warning');
+              const genreRoot =
+                (root && root.querySelector ? root.querySelector('#genre-dd') : null)
+                || document.querySelector('#genre-dd');
+              const roleRoot =
+                (root && root.querySelector ? root.querySelector('#role-dd') : null)
+                || document.querySelector('#role-dd');
               const genreVal = (genreRoot?.querySelector("input") || genreRoot?.querySelector("select"))?.value;
               const roleVal = (roleRoot?.querySelector("input") || roleRoot?.querySelector("select"))?.value;
               if (!genreVal || !roleVal) {
@@ -659,9 +695,9 @@ def build_demo(*, on_user_message, on_begin_story, on_begin_story_checked, on_co
                 return;
               }
 
-              const bg = document.getElementById("crystal-ball-bg");
-              const content = document.getElementById("ball-content");
-              const player = document.getElementById("ball-lottie");
+              const bg = root.getElementById("crystal-ball-bg") || document.getElementById("crystal-ball-bg");
+              const content = root.getElementById("ball-content") || document.getElementById("ball-content");
+              const player = root.getElementById("ball-lottie") || document.getElementById("ball-lottie");
 
               if (bg) bg.classList.remove("blurred");
 
@@ -683,6 +719,26 @@ def build_demo(*, on_user_message, on_begin_story, on_begin_story_checked, on_co
                   bg.classList.remove("active");
               }
               }, 3400);
+
+              // After the animation finishes, trigger ONE backend call to start the story.
+              setTimeout(() => {
+                const backendEl =
+                  (root && root.querySelector ? root.querySelector('#begin-backend') : null)
+                  || document.querySelector('#begin-backend');
+
+                if (!backendEl) {
+                  console.log('[fablefriend] begin-backend element not found');
+                  return;
+                }
+
+                const maybeButton = (backendEl.tagName === 'BUTTON') ? backendEl : backendEl.querySelector('button');
+                if (maybeButton) {
+                  maybeButton.click();
+                  console.log('[fablefriend] begin-backend clicked');
+                } else {
+                  console.log('[fablefriend] begin-backend element found but no button inside');
+                }
+              }, 3450);
               }
               """
         )
@@ -694,12 +750,13 @@ def build_demo(*, on_user_message, on_begin_story, on_begin_story_checked, on_co
               t,
               n,
               g,
-              False,
-              0.0,
               h,
               gr.update(),
               gr.update(),
               '<div style="color: #ffffff; font-weight: 700;">Finish your adventure\'s details!</div>',
+              gr.update(visible=True),
+              gr.update(visible=False),
+              gr.update(visible=False),
             )
 
           out = on_begin_story_checked(n, g, r, (s or ""), h, t)
@@ -707,26 +764,37 @@ def build_demo(*, on_user_message, on_begin_story, on_begin_story_checked, on_co
           new_thread_id = out[1]
           new_char_name = out[2]
           new_genre = out[3]
-          pending = out[4]
-          deadline = out[5]
           display_char_name = (new_char_name or "").strip() or "Unknown Hero"
           return (
               new_history,
               new_thread_id,
               new_char_name,
               new_genre,
-              pending,
-              deadline,
               new_history,
               _render_readout("Character", display_char_name),
               _render_readout("Genre", new_genre),
           "",
+              gr.update(visible=False),
+              gr.update(visible=False),
+              gr.update(visible=True),
           )
 
-        begin_btn.click(
-            fn=_begin_story_click,
+        begin_backend_btn.click(
+          fn=_begin_story_click,
           inputs=[char_name, genre, role, image_style_state, history_state, thread_id_state],
-          outputs=[history_state, thread_id_state, char_name_state, genre_state, transition_pending, transition_deadline, chatbot, char_readout, genre_readout, begin_warning],
+          outputs=[
+            history_state,
+            thread_id_state,
+            char_name_state,
+            genre_state,
+            chatbot,
+            char_readout,
+            genre_readout,
+            begin_warning,
+            title_screen,
+            crystal_ball_screen,
+            chat_screen,
+          ],
         )
 
     return demo
