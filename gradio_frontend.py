@@ -577,8 +577,12 @@ def build_demo(*, on_user_message, on_begin_story, on_begin_story_checked, on_co
                     chat_u,
                 ) = on_user_message(user_message, history, thread_id)
 
+                # Always clear the textbox client-side state after a submit.
+                # This prevents accidental re-submission of stale text under queue/reconnect edge cases.
+                cleared = ""
+
                 return (
-                    box,
+                    cleared,
                     new_history,
                     new_history,
                     new_thread_id,
@@ -614,9 +618,9 @@ def build_demo(*, on_user_message, on_begin_story, on_begin_story_checked, on_co
             )
 
             with gr.Row(equal_height=True):
-                continue_btn = gr.Button("Continue (No Action)", scale=2, min_width=160)
-                rewind_btn = gr.Button("Rewind", scale=1, min_width=140)
-                menu_btn = gr.Button("Menu", scale=1, min_width=120)
+                continue_btn = gr.Button("Continue ▶️ (No Action)", scale=2, min_width=160)
+                rewind_btn = gr.Button("Rewind ⏪ Try Again", scale=1, min_width=140)
+                menu_btn = gr.Button("Start a New Adventure!🌱💫", scale=1, min_width=120)
 
             continue_btn.click(
                 fn=_continue_click,

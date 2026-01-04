@@ -21,6 +21,18 @@ from huggingface_hub import InferenceClient
 from PIL import Image
 import gradio as gr
 import time
+import copy
+import sys
+
+# Windows consoles can default to cp1252, which may crash on certain Unicode
+# characters from model outputs. Make printing resilient.
+try:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
 from file_of_prompts import (
     INTEMEDIARY_PROMPT,  # No longer in use but kept for reference
     INTRO_PROMPT_TEMPLATE,
@@ -306,13 +318,61 @@ def _get_latest_interrupt_configs(thread_id: str) -> list[Any]:
     """Return interrupt snapshots (newest first) for a given thread_id."""
     try:
         cfg = {"configurable": {"thread_id": thread_id}}
+        # NOTE: Do not assume snapshots have a numeric .index attribute.
+        # Some implementations expose .index as a method, which breaks int().
+        # We rely on the order returned by get_state_history (typically newest -> oldest).
         snapshots = list(app.get_state_history(cfg))
-        interrupts = [s for s in snapshots if getattr(s, "interrupts", None)]
-        interrupts.sort(key=lambda s: int(getattr(s, "index", 0)), reverse=True)
-        return interrupts
+        return [s for s in snapshots if getattr(s, "interrupts", None)]
     except Exception as e:
         print(f"[rewind] failed to read state history: {e}")
         return []
+
+
+def _clear_pending_writes_for_cfg(cfg: dict) -> None:
+    """Clear any pending writes for the checkpoint referenced by cfg.
+
+    When rewinding to an older checkpoint_id, LangGraph's in-memory checkpointer can
+    still hold pending writes for that checkpoint (including prior interrupt/resume
+    payloads). Clearing them ensures the next resume consumes the *new* user input.
+    """
+    try:
+        configurable = (cfg or {}).get("configurable") or {}
+        thread_id = configurable.get("thread_id")
+        checkpoint_ns = configurable.get("checkpoint_ns", "")
+        checkpoint_id = configurable.get("checkpoint_id")
+        if not thread_id or not checkpoint_id:
+            return
+        key = (str(thread_id), str(checkpoint_ns), str(checkpoint_id))
+        # memory is the checkpointer instance used by the compiled graph.
+        if not hasattr(memory, "writes"):
+            return
+
+        # IMPORTANT: do NOT delete the __interrupt__ pending write. If we remove it,
+        # the graph will no longer appear "interrupted" and the UI will fall back
+        # to treating the thread as ended.
+        try:
+            writes_for_ckpt = memory.writes.get(key)
+            if not writes_for_ckpt:
+                return
+            to_delete: list[tuple[str, int]] = []
+            for write_key, write_val in list(writes_for_ckpt.items()):
+                # write_val: (task_id, channel, typed_bytes, task_path)
+                channel = None
+                try:
+                    channel = write_val[1]
+                except Exception:
+                    channel = None
+                if channel != "__interrupt__":
+                    to_delete.append(write_key)
+            for wk in to_delete:
+                try:
+                    writes_for_ckpt.pop(wk, None)
+                except Exception:
+                    continue
+        except Exception:
+            return
+    except Exception:
+        return
 
 
 def _revert_history_by_record(history: list[dict], record: dict) -> list[dict]:
@@ -557,8 +617,8 @@ def judger_improver(state: Story):
 
     if verdict == "game_over":
         game_over_text = (
-            f"GAME OVER.\n\n{consequence or 'Your action proves fatal or irrecoverable in this moment.'}\n\n"
-            "Type 'start' to begin a new adventure, or describe a different action to rewind from the last safe moment."
+            f"<b><i>GAME😩OVER</i></b>\n\n<i>{consequence or 'Your action proves fatal or irrecoverable in this moment.'}</i>\n\n"
+            "<b>Your fable ends here... for now. Would you like to turn back the pages or begin a new legend?</b>"
         )
         return Command(
             update={
@@ -914,16 +974,64 @@ def on_app_start():
 
 def on_user_message(user_message, history, thread_id):
     msg = (user_message or "").strip()
+    # Make this log line unmissable when debugging Gradio/queue issues.
+    try:
+        print(f"[ui] on_user_message thread_id={thread_id!r} msg={msg!r}", flush=True)
+        sys.stderr.write(f"[ui] on_user_message thread_id={thread_id!r} msg={msg!r}\n")
+        sys.stderr.flush()
+    except Exception:
+        pass
     if not msg:
         meta = THREAD_META.get(thread_id or "") or {}
-        return "", history, thread_id, gr.update(), gr.update(), gr.update()
+        return gr.update(value=""), history, thread_id, gr.update(), gr.update(), gr.update()
+
+    def _ended_text() -> str:
+        return "The story has ended. Type __REWIND__ to rewind, or __MENU__ to return to the menu."
+
+    def _try_read_last_situation_text() -> str | None:
+        try:
+            st = app.get_state({"configurable": {"thread_id": thread_id}})
+            values = getattr(st, "values", None)
+            if not isinstance(values, dict):
+                return None
+            situation = values.get("situation") or []
+            if not situation:
+                return None
+            last = situation[-1]
+            text = getattr(last, "content", None)
+            if isinstance(text, str) and text.strip():
+                return text.strip()
+            return str(last).strip() if str(last).strip() else None
+        except Exception:
+            return None
+
+    def _get_interrupt_cfg(meta: dict) -> dict | None:
+        """Return a config that is CURRENTLY at an interrupt for this thread.
+        This prevents stale/queued resume values from being applied when the graph
+        is not actually waiting at the user interrupt.
+        """
+        candidates: list[dict] = []
+        for key in ("cfg", "last_interrupt_cfg"):
+            cfg = meta.get(key)
+            if isinstance(cfg, dict) and cfg:
+                candidates.append(cfg)
+        candidates.append({"configurable": {"thread_id": thread_id}})
+
+        for cfg in candidates:
+            try:
+                st = app.get_state(cfg)
+                if getattr(st, "interrupts", None):
+                    return st.config
+            except Exception:
+                continue
+        return None
 
     # MENU: return to crystal selection (clears current thread).
     if msg.lower() == "start" or msg == MENU_KEY or msg == "___MENU__":
         if thread_id and thread_id in THREAD_META:
             THREAD_META.pop(thread_id, None)
         return (
-            "",
+            gr.update(value=""),
             [],
             "",
             gr.update(visible=False),
@@ -931,24 +1039,57 @@ def on_user_message(user_message, history, thread_id):
             gr.update(visible=False),
         )
 
-    # REWIND: drop the last user+assistant pair by replaying prior inputs.
+    # REWIND: drop the last user+assistant pair (fast, no regeneration).
     if msg == REWIND_KEY:
         meta = THREAD_META.get(thread_id or "") or {}
         if not meta:
-            return "", history, thread_id, gr.update(), gr.update(), gr.update()
+            return gr.update(value=""), history, thread_id, gr.update(), gr.update(), gr.update()
+
+        # Gradio can fire control actions twice - make rewind immune to the doubles
+        try:
+            now = time.time()
+            last_cmd = meta.get("_last_control_cmd")
+            last_ts = float(meta.get("_last_control_cmd_ts") or 0.0)
+            if last_cmd == REWIND_KEY and (now - last_ts) < 1.25:
+                return gr.update(value=""), history, thread_id, gr.update(), gr.update(), gr.update()
+            meta["_last_control_cmd"] = REWIND_KEY
+            meta["_last_control_cmd_ts"] = now
+        except Exception:
+            pass
 
         records = list(meta.get("turn_records") or [])
         if not records:
-            return "", history, thread_id, gr.update(), gr.update(), gr.update()
-
-        # Restore previous LangGraph interrupt checkpoint (prevents re-generation).
-        interrupts = _get_latest_interrupt_configs(thread_id)
-        if len(interrupts) >= 2:
-            # Move to the previous interrupt.
-            meta["cfg"] = interrupts[1].config
+            return gr.update(value=""), history, thread_id, gr.update(), gr.update(), gr.update()
 
         record = records.pop()
         meta["turn_records"] = records
+
+        # Restore the exact interrupt config from before the popped turn.
+        cfg_before = record.get("cfg_before")
+        if isinstance(cfg_before, dict) and cfg_before:
+            meta["cfg"] = cfg_before
+            meta["last_interrupt_cfg"] = cfg_before
+            # Critical: clear any pending writes on that checkpoint so the next resume
+            # doesn't reuse an old interrupt payload.
+            _clear_pending_writes_for_cfg(cfg_before)
+        else:
+            # Fallback: infer from state history.
+            interrupts = _get_latest_interrupt_configs(thread_id)
+            if len(interrupts) >= 2:
+                meta["cfg"] = interrupts[1].config
+                meta["last_interrupt_cfg"] = interrupts[1].config
+                _clear_pending_writes_for_cfg(interrupts[1].config)
+            elif len(interrupts) == 1:
+                meta["cfg"] = interrupts[0].config
+                meta["last_interrupt_cfg"] = interrupts[0].config
+                _clear_pending_writes_for_cfg(interrupts[0].config)
+
+        # If the thread was ended (GAME OVER / finish), rewinding should re-enable play.
+        meta["ended"] = False
+
+        # One-turn grace after rewinding from an ended turn (GAME OVER / finish).
+        if record.get("was_game_over") or record.get("ended_after"):
+            meta["grace_next"] = True
 
         # Keep meta inputs/images consistent.
         inputs = list(meta.get("inputs") or [])
@@ -965,19 +1106,42 @@ def on_user_message(user_message, history, thread_id):
 
         new_history = _revert_history_by_record(history, record)
         THREAD_META[thread_id] = meta
-        return "", new_history, thread_id, gr.update(), gr.update(), gr.update()
+        return gr.update(value=""), new_history, thread_id, gr.update(), gr.update(), gr.update()
 
     meta = THREAD_META.get(thread_id or "")
     if not meta:
         # If we lost meta (server restart), force the user back to menu.
         return (
-            "",
+            gr.update(value=""),
             [],
             "",
             gr.update(visible=False),
             gr.update(visible=True),
             gr.update(visible=False),
         )
+
+    # Best-effort dedupe: Gradio can double-submit the same payload under some
+    # reconnect/queue edge cases. This avoids racing two resumes on one checkpoint.
+    try:
+        now = time.time()
+        last_msg = meta.get("_last_ui_msg")
+        last_ts = float(meta.get("_last_ui_msg_ts") or 0.0)
+        if msg == last_msg and (now - last_ts) < 0.75:
+            return gr.update(value=""), history, thread_id, gr.update(), gr.update(), gr.update()
+        meta["_last_ui_msg"] = msg
+        meta["_last_ui_msg_ts"] = now
+    except Exception:
+        pass
+
+    # If the graph reached END (e.g., GAME OVER), don't attempt to resume; it can throw.
+    # Keep rewind perfect by leaving rewind path untouched.
+    if meta.get("ended"):
+        history = list(history or [])
+        record = {"type": "user", "history_len_before": len(history), "image_added": False, "was_game_over": True}
+        history = history + [{"role": "user", "content": msg}, {"role": "assistant", "content": _ended_text()}]
+        meta.setdefault("turn_records", []).append(record)
+        THREAD_META[thread_id] = meta
+        return gr.update(value=""), history, thread_id, gr.update(), gr.update(), gr.update()
 
     meta.setdefault("inputs", []).append(msg)
 
@@ -986,18 +1150,60 @@ def on_user_message(user_message, history, thread_id):
         meta["grace_next"] = False
         msg_for_graph = GRACE_PERIOD_INVISIBLE_TELLER + msg
 
-    # Always run from the pinned checkpoint config if available.
-    cfg = meta.get("cfg") or {"configurable": {"thread_id": thread_id}}
-    next_scene, new_image = run_until_interrupt(app, Command(resume=msg_for_graph), config=cfg)
+    # Always resume from a config that is *currently* waiting at an interrupt.
+    interrupt_cfg = _get_interrupt_cfg(meta)
+    if not interrupt_cfg:
+        # We aren't at an interrupt; treat as ended to avoid poisoning resume queues.
+        meta["ended"] = True
+        history = list(history or [])
+        record = {"type": "user", "history_len_before": len(history), "image_added": False, "was_game_over": True}
+        history = history + [{"role": "user", "content": msg}, {"role": "assistant", "content": _ended_text()}]
+        meta.setdefault("turn_records", []).append(record)
+        THREAD_META[thread_id] = meta
+        return gr.update(value=""), history, thread_id, gr.update(), gr.update(), gr.update()
+
+    cfg_before = copy.deepcopy(interrupt_cfg)
+    try:
+        # Resume by interrupt id to avoid stale/queued resume values being applied
+        # to the wrong interrupt after rewinds/branching.
+        interrupts = []
+        try:
+            st_for_resume = app.get_state(interrupt_cfg)
+            interrupts = list(getattr(st_for_resume, "interrupts", None) or [])
+        except Exception:
+            interrupts = []
+
+        resume_cmd = Command(resume=msg_for_graph)
+        if interrupts:
+            resume_cmd = Command(resume={interrupts[0].id: msg_for_graph})
+
+        next_scene, new_image = run_until_interrupt(app, resume_cmd, config=interrupt_cfg)
+    except Exception as e:
+        print(f"[chat] resume failed (likely ended thread); forcing ended state: {e}")
+        next_scene, new_image = _ended_text(), None
+        meta["ended"] = True
+
+    # If the stream ended without emitting a situation update, try to recover from stored state.
     if next_scene == "Nothing for now":
-        next_scene = "The story has ended. Type __REWIND__ to rewind, or __MENU__ to return to the menu."
+        recovered = _try_read_last_situation_text()
+        next_scene = recovered or _ended_text()
+
+    if isinstance(next_scene, str) and next_scene.lstrip().startswith("GAME OVER"):
+        meta["ended"] = True
 
     if new_image is not None:
         meta["last_image"] = new_image
         meta.setdefault("images", []).append(new_image)
 
     history = list(history or [])
-    record = {"type": "user", "history_len_before": len(history), "image_added": bool(new_image is not None)}
+    record = {
+        "type": "user",
+        "history_len_before": len(history),
+        "image_added": bool(new_image is not None),
+        "was_game_over": bool(isinstance(next_scene, str) and next_scene.lstrip().startswith("GAME OVER")),
+        "ended_after": bool(meta.get("ended")),
+        "cfg_before": cfg_before,
+    }
     history = history + [{"role": "user", "content": msg}, {"role": "assistant", "content": next_scene}]
     try:
         if new_image is not None:
@@ -1007,11 +1213,15 @@ def on_user_message(user_message, history, thread_id):
 
     meta.setdefault("turn_records", []).append(record)
     # Pin the current interrupt checkpoint config for reliable rewinds.
+    # IMPORTANT: do not overwrite cfg after a finished run (END) or rewinds won't have a valid interrupt to resume.
     try:
-        meta["cfg"] = app.get_state({"configurable": {"thread_id": thread_id}}).config
+        st = app.get_state({"configurable": {"thread_id": thread_id}})
+        if getattr(st, "interrupts", None):
+            meta["cfg"] = st.config
+            meta["last_interrupt_cfg"] = st.config
     except Exception:
         pass
-    return "", history, thread_id, gr.update(), gr.update(), gr.update()
+    return gr.update(value=""), history, thread_id, gr.update(), gr.update(), gr.update()
 
 
 def on_menu_click(history, thread_id):
@@ -1120,7 +1330,10 @@ def on_begin_story(char_name, genre, role_id, image_style, history, thread_id):
         "turn_records": [],
     }
     try:
-        meta["cfg"] = app.get_state({"configurable": {"thread_id": thread_id}}).config
+        st = app.get_state({"configurable": {"thread_id": thread_id}})
+        if getattr(st, "interrupts", None):
+            meta["cfg"] = st.config
+            meta["last_interrupt_cfg"] = st.config
     except Exception:
         pass
     THREAD_META[thread_id] = meta
@@ -1140,13 +1353,66 @@ def continue_story(history, thread_id):
     meta = THREAD_META.get(thread_id)
     if meta is None:
         return history, thread_id
+
+    if meta.get("ended"):
+        history = list(history or [])
+        history.append({"role": "assistant", "content": "The story has ended. Type __REWIND__ to rewind, or __MENU__ to return to the menu."})
+        return history, thread_id
     meta.setdefault("inputs", []).append(CONTINUE_KEY)
-    
-    cfg = meta.get("cfg") or {"configurable": {"thread_id": thread_id}}
-    next_scene, new_image = run_until_interrupt(app, Command(resume=CONTINUE_KEY), config=cfg)
+
+    # Continue must also resume only from a live interrupt checkpoint.
+    interrupt_cfg = None
+    for cand in (meta.get("cfg"), meta.get("last_interrupt_cfg"), {"configurable": {"thread_id": thread_id}}):
+        if not isinstance(cand, dict) or not cand:
+            continue
+        try:
+            st = app.get_state(cand)
+            if getattr(st, "interrupts", None):
+                interrupt_cfg = st.config
+                break
+        except Exception:
+            continue
+    if not interrupt_cfg:
+        meta["ended"] = True
+        history = list(history or [])
+        history.append({"role": "assistant", "content": "The story has ended. Type __REWIND__ to rewind, or __MENU__ to return to the menu."})
+        return history, thread_id
+
+    cfg_before = copy.deepcopy(interrupt_cfg)
+    try:
+        interrupts = []
+        try:
+            st_for_resume = app.get_state(interrupt_cfg)
+            interrupts = list(getattr(st_for_resume, "interrupts", None) or [])
+        except Exception:
+            interrupts = []
+
+        resume_cmd = Command(resume=CONTINUE_KEY)
+        if interrupts:
+            resume_cmd = Command(resume={interrupts[0].id: CONTINUE_KEY})
+
+        next_scene, new_image = run_until_interrupt(app, resume_cmd, config=interrupt_cfg)
+    except Exception as e:
+        print(f"[chat] continue failed (likely ended thread); forcing ended state: {e}")
+        next_scene, new_image = "The story has ended. Type __REWIND__ to rewind, or __MENU__ to return to the menu.", None
+        meta["ended"] = True
 
     if next_scene == "Nothing for now":
-        next_scene = "The story has ended. Type __REWIND__ to rewind, or __MENU__ to return to the menu."
+        try:
+            st = app.get_state({"configurable": {"thread_id": thread_id}})
+            values = getattr(st, "values", None)
+            situation = values.get("situation") if isinstance(values, dict) else None
+            if situation:
+                last = situation[-1]
+                recovered = getattr(last, "content", None)
+                next_scene = (recovered.strip() if isinstance(recovered, str) else str(last).strip())
+            else:
+                next_scene = "The story has ended. Type __REWIND__ to rewind, or __MENU__ to return to the menu."
+        except Exception:
+            next_scene = "The story has ended. Type __REWIND__ to rewind, or __MENU__ to return to the menu."
+
+    if isinstance(next_scene, str) and next_scene.lstrip().startswith("GAME OVER"):
+        meta["ended"] = True
 
     if new_image is not None:
         meta["last_image"] = new_image
@@ -1160,6 +1426,8 @@ def continue_story(history, thread_id):
         "assistant_text_index": last_text_idx,
         "assistant_text_before": (str(history[last_text_idx].get("content") or "") if last_text_idx is not None else ""),
         "image_added": bool(new_image is not None),
+        "ended_after": bool(meta.get("ended")),
+        "cfg_before": cfg_before,
     }
     if last_text_idx is not None:
         prior = str(history[last_text_idx].get("content") or "")
@@ -1175,7 +1443,10 @@ def continue_story(history, thread_id):
 
     meta.setdefault("turn_records", []).append(record)
     try:
-        meta["cfg"] = app.get_state({"configurable": {"thread_id": thread_id}}).config
+        st = app.get_state({"configurable": {"thread_id": thread_id}})
+        if getattr(st, "interrupts", None):
+            meta["cfg"] = st.config
+            meta["last_interrupt_cfg"] = st.config
     except Exception:
         pass
 
