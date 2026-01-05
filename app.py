@@ -986,7 +986,7 @@ def on_user_message(user_message, history, thread_id):
         return gr.update(value=""), history, thread_id, gr.update(), gr.update(), gr.update()
 
     def _ended_text() -> str:
-        return "The story has ended. Type __REWIND__ to rewind, or __MENU__ to return to the menu."
+        return "Is this the end of your fable? Change the past or begin a new legend." # unreachable but kept just in case.
 
     def _try_read_last_situation_text() -> str | None:
         try:
@@ -1188,7 +1188,7 @@ def on_user_message(user_message, history, thread_id):
         recovered = _try_read_last_situation_text()
         next_scene = recovered or _ended_text()
 
-    if isinstance(next_scene, str) and next_scene.lstrip().startswith("GAME OVER"):
+    if isinstance(next_scene, str) and next_scene.lstrip().startswith(("GAME OVER", "GAME😩OVER")):
         meta["ended"] = True
 
     if new_image is not None:
@@ -1200,7 +1200,7 @@ def on_user_message(user_message, history, thread_id):
         "type": "user",
         "history_len_before": len(history),
         "image_added": bool(new_image is not None),
-        "was_game_over": bool(isinstance(next_scene, str) and next_scene.lstrip().startswith("GAME OVER")),
+        "was_game_over": bool(isinstance(next_scene, str) and next_scene.lstrip().startswith(("GAME OVER", "GAME😩OVER"))),
         "ended_after": bool(meta.get("ended")),
         "cfg_before": cfg_before,
     }
@@ -1411,7 +1411,7 @@ def continue_story(history, thread_id):
         except Exception:
             next_scene = "The story has ended. Type __REWIND__ to rewind, or __MENU__ to return to the menu."
 
-    if isinstance(next_scene, str) and next_scene.lstrip().startswith("GAME OVER"):
+    if isinstance(next_scene, str) and next_scene.lstrip().startswith(("GAME OVER", "GAME😩OVER")):
         meta["ended"] = True
 
     if new_image is not None:

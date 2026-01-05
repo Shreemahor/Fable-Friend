@@ -77,12 +77,14 @@ CSS = """
   --bg-dark: #0f1116;
   --gold-primary: #FFD700;
   --gold-secondary: #FF8C00;
-  --purple-dark: #2e0249;
-  --purple-deep: #1a0b2e;
+  --rebecca-purple: #663399;
+  --rebecca-purple: #663399;
 }
 
+/* In some places there might be purple dark, and sometimes rebecca purple but both are okay*/
+
 .readout-box {
-  background: var(--purple-dark) !important;
+  background: var(--rebecca-purple) !important;
   color: #ffffff !important;
   border: 1px solid rgba(255, 215, 0, 0.35) !important;
   border-radius: 12px;
@@ -131,7 +133,7 @@ body {
 
 /* Dropdown popup background + text */
 .gradio-container [role="listbox"] {
-  background: var(--purple-deep) !important;
+  background: var(--rebecca-purple) !important;
   border: 1px solid var(--gold-primary) !important;
 }
 
@@ -163,15 +165,12 @@ body {
   inset: 0;
   display: grid;
   place-items: center;
-  z-index: 9999;
+  /* Keep the crystal ball behind the UI by default (small screens especially). */
+  z-index: 1;
   pointer-events: none;
 
   opacity: 0;
   transition: opacity 0.35s ease, filter 1.5s ease;
-}
-
-#crystal-ball-bg {
-  z-index: 9999 !important;
 }
 
 #crystal-ball-bg, #crystal-ball-bg * {
@@ -191,6 +190,8 @@ body {
 #crystal-ball-bg.zoomed-in {
   transform: scale(20);
   filter: blur(0px) brightness(1);
+  /* During the zoom transition, it should sit on top. */
+  z-index: 9999;
 }
 
 #ball-content {
@@ -204,8 +205,9 @@ body {
 
 /* CRYSTAL BALLL SIZE ADJUSTS MENTS IS HERE*/
 #crystal-ball-bg lottie-player {
-  width: 600px;
-  height: 600px;
+  /* Responsive sizing: scales to the device while keeping a sane min/max. */
+  width: clamp(220px, 70vmin, 600px);
+  height: clamp(220px, 70vmin, 600px);
   filter: drop-shadow(0 0 30px rgba(91, 139, 255, 0.3));
 }
 
@@ -388,7 +390,7 @@ def build_demo(*, on_user_message, on_begin_story, on_begin_story_checked, on_co
           ],
           "grimdark": [
             ("Plague Doctor 🎭", "plague_doctor"),
-            ("Broken Knight ⚔️", "broken_knight"),
+            ("Broken Knight 💔", "broken_knight"),
             ("Famine Scavenger 🎒", "famine_scavenger"),
             ("Penitent Zealot 🕯️", "penitent_zealot"),
             ("Grave Robber 🔦", "grave_robber"),
@@ -440,7 +442,7 @@ def build_demo(*, on_user_message, on_begin_story, on_begin_story_checked, on_co
         with title_screen:
             with gr.Group(elem_classes=["screen-inner"]):
                 gr.Image(
-                    value="frontend/title.png",
+                    value="frontend/improved-title.png",
                     show_label=False,
                     interactive=False,
                     container=False,
@@ -559,7 +561,7 @@ def build_demo(*, on_user_message, on_begin_story, on_begin_story_checked, on_co
             )
             textbox = gr.Textbox(
                 label="Your action",
-              placeholder="Describe your move, or click below to let fate decide...",
+                placeholder="Describe your move, or click below to let fate decide...",
                 show_label=False,
               elem_id="action-box",
             )
